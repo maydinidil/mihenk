@@ -1,12 +1,12 @@
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from mihenk.api.security import TOKEN_HEADER, GuardConfig, LocalOnlyGuard
 
 PORT = 51234
-TOKEN = "test-token-0123456789abcdef"
+TOKEN = "test-token-0123456789abcdef0123456789"
 BASE = f"http://127.0.0.1:{PORT}"
 GOOD = {TOKEN_HEADER: TOKEN}
 
@@ -25,6 +25,12 @@ def make_client() -> TestClient:
     @app.get("/")
     def index() -> dict[str, str]:
         return {"page": "index"}
+
+    @app.websocket("/ws")
+    async def socket(websocket: WebSocket) -> None:
+        # A route that accepts, so only the guard can be the reason the socket is refused.
+        await websocket.accept()
+        await websocket.close()
 
     app.add_middleware(LocalOnlyGuard, config=GuardConfig(port=PORT, token=TOKEN))
     return TestClient(app, base_url=BASE)
@@ -101,5 +107,31 @@ def test_other_sites_are_refused(site: str) -> None:
 
 
 def test_websocket_is_refused() -> None:
-    with pytest.raises(WebSocketDisconnect), make_client().websocket_connect("/ws"):
+    with (
+        pytest.raises(WebSocketDisconnect) as refused,
+        make_client().websocket_connect("/ws"),
+    ):
         pass
+    assert refused.value.code == 1008
+
+
+def test_config_accepts_the_shortest_valid_token_and_the_port_limits() -> None:
+    assert GuardConfig(port=1, token="a" * 32).port == 1
+    assert GuardConfig(port=65535, token="a" * 32).port == 65535
+
+
+@pytest.mark.parametrize("token", ["", "short", "a" * 31])
+def test_config_rejects_a_token_under_32_characters(token: str) -> None:
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        GuardConfig(port=PORT, token=token)
+
+
+def test_config_rejects_a_non_ascii_token() -> None:
+    with pytest.raises(ValueError, match="ASCII"):
+        GuardConfig(port=PORT, token="töken-" + "a" * 32)
+
+
+@pytest.mark.parametrize("port", [-1, 0, 65536])
+def test_config_rejects_a_port_outside_1_to_65535(port: int) -> None:
+    with pytest.raises(ValueError, match="port"):
+        GuardConfig(port=port, token=TOKEN)

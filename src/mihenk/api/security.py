@@ -20,10 +20,22 @@ _SAFE_METHODS = frozenset({"GET", "HEAD"})
 _TRUSTED_FETCH_SITES = frozenset({"same-origin", "none"})
 
 
+_MIN_TOKEN_LENGTH = 32
+
+
 @dataclass(frozen=True)
 class GuardConfig:
     port: int
     token: str
+
+    def __post_init__(self) -> None:
+        # An empty or short token would weaken the check, and a non-ASCII one would crash it.
+        if not 1 <= self.port <= 65535:
+            raise ValueError(f"port must be from 1 to 65535, got {self.port}")
+        if not self.token.isascii():
+            raise ValueError("token must be ASCII")
+        if len(self.token) < _MIN_TOKEN_LENGTH:
+            raise ValueError(f"token must be at least {_MIN_TOKEN_LENGTH} characters")
 
     @property
     def allowed_hosts(self) -> frozenset[str]:

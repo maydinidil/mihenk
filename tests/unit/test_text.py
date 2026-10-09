@@ -37,3 +37,14 @@ def test_hidden_elements_are_dropped() -> None:
 def test_a_page_without_a_closing_head_tag_keeps_its_body_text() -> None:
     # html.parser never closes an open <head>, so the body nests inside it.
     assert html_to_text("<html><head><title>T</title><body><p>€9</p>") == "€9\n"
+
+
+def test_deeply_nested_elements_do_not_exhaust_the_stack() -> None:
+    html = "<div>" * 5_000 + "€9" + "</div>" * 5_000
+    assert html_to_text(html) == "€9\n"
+
+
+def test_thousands_of_unclosed_list_items_do_not_exhaust_the_stack() -> None:
+    # html.parser never closes an <li>, so every item nests inside the one before it.
+    html = "<ul>" + "<li>€9" * 5_000 + "</ul>"
+    assert html_to_text(html) == "€9\n" * 5_000

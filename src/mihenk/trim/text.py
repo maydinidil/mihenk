@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterator
 
 from bs4 import BeautifulSoup, Tag
 from bs4.element import (
@@ -17,8 +18,11 @@ from bs4.element import (
     Declaration,
     Doctype,
     NavigableString,
+    PageElement,
     ProcessingInstruction,
 )
+
+_Frame = tuple[Iterator[PageElement], bool, bool]
 
 _HSPACE = re.compile(r"[ \t\f\v\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+")
 _INVISIBLE = re.compile(r"[\u200b\ufeff]")
@@ -84,9 +88,14 @@ def canonical_text(raw: str) -> str:
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     parts: list[str] = []
-
-    def walk(node: Tag, in_pre: bool) -> None:
-        for child in node.children:
+    # An explicit stack instead of recursion: html.parser never closes an <li>, <p> or <td>, so a
+    # valid page of a few thousand list items nests that deep and would overflow the call stack.
+    # Each frame is the children still to visit, whether we are inside <pre>, and whether the
+    # element is a block, whose closing line break is written when its children run out.
+    stack: list[_Frame] = [(iter(soup.children), False, False)]
+    while stack:
+        children, in_pre, closing_break = stack[-1]
+        for child in children:
             if isinstance(child, _NOT_TEXT):
                 continue
             if isinstance(child, NavigableString):
@@ -103,10 +112,11 @@ def html_to_text(html: str) -> str:
             block = name in _BLOCK
             if block:
                 parts.append("\n")
-            walk(child, in_pre or name == "pre")
-            if block:
+            stack.append((iter(child.children), in_pre or name == "pre", block))
+            break
+        else:
+            stack.pop()
+            if closing_break:
                 parts.append("\n")
-
-    walk(soup, in_pre=False)
     # One line per block: block edges never produce blank lines on the fetch route.
     return canonical_text(re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n", "".join(parts)))

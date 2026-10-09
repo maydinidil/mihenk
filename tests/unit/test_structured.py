@@ -142,3 +142,47 @@ def test_block_to_json_keeps_raw_only_when_nothing_was_parsed() -> None:
     (broken,) = extract_structured(_script("{oops"))
     assert block_to_json(broken)["raw"] == "{oops"
     assert block_to_json(broken)["parsed"] is None
+
+
+BACKSLASH = chr(92)
+LONE_SURROGATE = chr(0xD800)
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_a_number_json_cannot_store_is_invalid(literal: str) -> None:
+    # json.loads accepts all four, but none can be written back as valid JSON.
+    body = '{"price": ' + literal + "}"
+    (block,) = extract_structured(_script(body))
+    assert block.parsed is None
+    assert block.raw == body
+    assert block.problem == "invalid_json: non-finite number"
+
+
+def test_an_escaped_lone_surrogate_is_invalid() -> None:
+    body = '{"name": "' + BACKSLASH + 'ud800"}'
+    (block,) = extract_structured(_script(body))
+    assert block.parsed is None
+    assert block.raw == body
+    assert block.problem == "invalid_json: unpaired surrogate"
+
+
+def test_an_escaped_lone_surrogate_in_a_key_is_invalid() -> None:
+    body = '{"' + BACKSLASH + 'udc00": 1}'
+    (block,) = extract_structured(_script(body))
+    assert block.parsed is None
+    assert block.problem == "invalid_json: unpaired surrogate"
+
+
+def test_an_escaped_surrogate_pair_is_one_valid_character() -> None:
+    body = '{"name": "' + BACKSLASH + "ud83d" + BACKSLASH + 'ude00"}'
+    (block,) = extract_structured(_script(body))
+    assert block.problem is None
+    assert block.parsed == {"name": chr(0x1F600)}
+
+
+def test_a_literal_lone_surrogate_in_the_script_text_does_not_raise() -> None:
+    body = '{"name": "' + LONE_SURROGATE + '"}'
+    (block,) = extract_structured(_script(body))
+    assert block.parsed is None
+    assert block.problem == "invalid_json: unpaired surrogate"
+    assert block.size_bytes == len(body.encode("utf-8", "surrogatepass"))

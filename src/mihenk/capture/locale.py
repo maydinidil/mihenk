@@ -35,9 +35,13 @@ class LocaleMarkers:
 _I = re.IGNORECASE
 _VAT: tuple[tuple[str, VatKind, re.Pattern[str]], ...] = (
     ("en", "excl", re.compile(r"(?:\b(?:excl(?:\.|uding)?|ex\.?|plus)\s*|\+\s*)VAT\b", _I)),
-    ("en", "incl", re.compile(r"\b(?:incl(?:\.|uding)?|inc\.?)\s*VAT\b|\bVAT\s+included\b", _I)),
+    (
+        "en",
+        "incl",
+        re.compile(r"(?<!not\s)(?:\b(?:incl(?:\.|uding)?|inc\.?)\s*VAT\b|\bVAT\s+included\b)", _I),
+    ),
     ("nl", "excl", re.compile(r"(?:\b(?:excl(?:\.|usief)?|ex\.?)\s*|\+\s*)btw\b", _I)),
-    ("nl", "incl", re.compile(r"\b(?:incl(?:\.|usief)?)\s*btw\b", _I)),
+    ("nl", "incl", re.compile(r"(?<!niet\s)\b(?:incl(?:\.|usief)?)\s*btw\b", _I)),
     (
         "de",
         "excl",
@@ -45,7 +49,11 @@ _VAT: tuple[tuple[str, VatKind, re.Pattern[str]], ...] = (
             r"\b(?:zzgl\.?|zuzüglich|exkl\.?|exklusive)\s*(?:\d{1,2}\s*%\s*)?(?:MwSt|USt)\b", _I
         ),
     ),
-    ("de", "incl", re.compile(r"\b(?:inkl\.?|inklusive)\s*(?:\d{1,2}\s*%\s*)?(?:MwSt|USt)\b", _I)),
+    (
+        "de",
+        "incl",
+        re.compile(r"(?<!nicht\s)\b(?:inkl\.?|inklusive)\s*(?:\d{1,2}\s*%\s*)?(?:MwSt|USt)\b", _I),
+    ),
     ("fr", "excl", re.compile(r"(?<![\w-])HT(?![\w-])")),
     ("fr", "incl", re.compile(r"(?<![\w-])TTC(?![\w-])")),
     (
@@ -56,8 +64,16 @@ _VAT: tuple[tuple[str, VatKind, re.Pattern[str]], ...] = (
     ("es", "incl", re.compile(r"\bIVA\s+incluido\b", _I)),
     ("it", "excl", re.compile(r"(?:\bpiù\s*|\+\s*)IVA\b|\bIVA\s+esclusa\b", _I)),
     ("it", "incl", re.compile(r"\bIVA\s+(?:inclusa|compresa)\b|\bincl\.?\s*IVA\b", _I)),
-    ("tr", "excl", re.compile(r"\+\s*KDV\b|\bKDV\s*har[iİı][çÇcC]|\bKDV['’]?s[iİı]z\b", _I)),
-    ("tr", "incl", re.compile(r"\bKDV\s*d[aâ]h[iİı]l", _I)),
+    (
+        "tr",
+        "excl",
+        re.compile(
+            r"\+\s*KDV\b|\bKDV\s*har[iİı][çÇcC]|\bKDV['’]?s[iİı]z\b"
+            r"|\bKDV\s*d[aâ]h[iİı]l\w*\s+de[gğ][iİı]l",
+            _I,
+        ),
+    ),
+    ("tr", "incl", re.compile(r"\bKDV\s*d[aâ]h[iİı]l(?!\w*\s+de[gğ][iİı]l)", _I)),
 )
 _FREE_SYMBOLS = ("€", "£", "¥", "₺", "₹", "₽", "₩", "$")
 _WORD_SYMBOLS = ("zł", "Kč", "kr", "CHF", "TL", "R$")

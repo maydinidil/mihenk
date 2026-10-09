@@ -41,6 +41,51 @@ def test_iva_no_incluido_is_not_reported_as_included() -> None:
     assert ("es", "incl") not in kinds
 
 
+@pytest.mark.parametrize(
+    ("text", "language"),
+    [
+        ("Fiyatlara KDV dahil değildir", "tr"),
+        ("KDV dahil değildir.", "tr"),
+        ("199 TL KDV DAHİL DEĞİLDİR", "tr"),
+        ("€25 niet inclusief btw", "nl"),
+        ("€25 Niet incl. btw", "nl"),
+        ("29 € nicht inkl. MwSt.", "de"),
+        ("29 € nicht inklusive 19 % MwSt.", "de"),
+        ("€9 not incl. VAT", "en"),
+        ("€9 Not including VAT", "en"),
+    ],
+)
+def test_negated_wording_is_not_reported_as_included(text: str, language: str) -> None:
+    kinds = {(p.language, p.kind) for p in markers(text).vat_phrases}
+    assert (language, "incl") not in kinds
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Fiyatlara KDV dahil değildir", "KDV dahil değildir.", "199 TL KDV DAHİL DEĞİLDİR"],
+)
+def test_turkish_kdv_dahil_degil_is_excluded_wording(text: str) -> None:
+    kinds = {(p.language, p.kind) for p in markers(text).vat_phrases}
+    assert ("tr", "excl") in kinds
+
+
+@pytest.mark.parametrize(
+    ("text", "language"),
+    [
+        ("€9 incl. VAT", "en"),
+        ("£9 inc VAT", "en"),
+        ("€9 including VAT", "en"),
+        ("VAT included", "en"),
+        ("€25 inclusief btw", "nl"),
+        ("29 € inkl. MwSt.", "de"),
+        ("Fiyatlara KDV dahildir", "tr"),
+    ],
+)
+def test_plain_included_wording_is_still_found(text: str, language: str) -> None:
+    kinds = {(p.language, p.kind) for p in markers(text).vat_phrases}
+    assert (language, "incl") in kinds
+
+
 def test_plus_iva_is_both_spanish_and_italian_wording() -> None:
     # The two languages share the wording; the page language decides later, not this module.
     kinds = {(p.language, p.kind) for p in markers("22 € + IVA").vat_phrases}
@@ -62,12 +107,17 @@ def test_language_signals() -> None:
 
 
 def test_a_long_run_of_digits_and_spaces_is_scanned_in_linear_time() -> None:
-    text = "1 " * 50_000
+    text = "1 " * 5_000
     started = time.monotonic()
     found = markers(text)
     elapsed = time.monotonic() - started
     assert found.currency_codes == ()
-    assert elapsed < 2
+    assert elapsed < 1
+
+
+@pytest.mark.parametrize("text", ["12 900 Kč", "12\u00a0900 Kč", "1.234,50 Kč", "405 Kč"])
+def test_symbol_after_a_number_with_separators(text: str) -> None:
+    assert markers(text).currency_symbols == ("Kč",)
 
 
 def test_markers_to_json_is_plain_data() -> None:

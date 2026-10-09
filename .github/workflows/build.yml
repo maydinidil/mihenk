@@ -17,10 +17,11 @@ on:
 permissions:
   contents: read
 
-# A newer run for the same ref makes the older one pointless.
+# One build per ref at a time. Queued, not cancelled: a nightly run must not cancel a build
+# started by hand.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -63,10 +64,9 @@ jobs:
       - name: Read the app version
         run: |
           version="$(uv run python -c "from mihenk import __version__; print(__version__)")"
-          case "$version" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::Unexpected version '$version' from src/mihenk/__init__.py"; exit 1 ;;
-          esac
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected version '$version' from src/mihenk/__init__.py"; exit 1
+          fi
           echo "MIHENK_VERSION=$version" >> "$GITHUB_ENV"
           echo "mihenk version: $version"
 
@@ -82,6 +82,9 @@ jobs:
       # `uv build`: the build hook needs the notices file, and an sdist is not shipped.
       - name: Build the wheel
         if: runner.os == 'macOS'
+        # The screens were built above; the hook still checks the notices and index.html.
+        env:
+          MIHENK_SKIP_WEB_BUILD: "1"
         run: uv build --wheel
 
       - name: Freeze the app with PyInstaller
@@ -106,16 +109,11 @@ jobs:
           }
           if (-not $iscc) { throw 'Inno Setup is still missing after the install.' }
           Write-Host "iscc: $iscc"
-          # The version banner goes into the log. ArchitecturesAllowed=x64compatible needs 6.3+.
-          $banner = (& $iscc '/?' 2>&1 | Out-String)
-          Write-Host $banner
-          if ($banner -match 'Inno Setup (\d+)\.(\d+)') {
-            if ([version]"$($Matches[1]).$($Matches[2])" -lt [version]'6.3') {
-              throw "Inno Setup $($Matches[1]).$($Matches[2]) is too old; mihenk.iss needs 6.3 or newer."
-            }
-          } else {
-            Write-Host '::warning::Could not read the Inno Setup version from the iscc banner.'
-          }
+          # ArchitecturesAllowed=x64compatible needs 6.3 or newer. The banner of `iscc /?` has no
+          # minor version, so read the version from the executable itself.
+          $version = [version](Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "Inno Setup version: $version"
+          if ($version -lt [version]'6.3') { throw "Inno Setup $version is too old; mihenk.iss needs 6.3 or newer." }
           "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Download the WebView2 bootstrapper
@@ -172,6 +170,14 @@ jobs:
           Write-Host "mihenk.exe --smoke exited with code $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { throw "The release check failed with exit code $($p.ExitCode)" }
 
+      # The windowed app has no console, so its log is the only diagnostic.
+      - name: Show the app log after a failed release check
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:LOCALAPPDATA 'mihenk\logs\mihenk.log'
+          if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Host "No log at $log" }
+
       - name: Upload the Windows installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -189,6 +195,13 @@ jobs:
         timeout-minutes: 5
         run: dist/mihenk.app/Contents/MacOS/mihenk --smoke
 
+      # The windowed app has no console, so its log is the only diagnostic.
+      - name: Show the app log after a failed release check
+        if: failure() && runner.os == 'macOS'
+        run: |
+          log="$HOME/Library/Application Support/mihenk/logs/mihenk.log"
+          if [ -f "$log" ]; then tail -n 200 "$log"; else echo "No log at $log"; fi
+
       - name: Make the disk image
         if: runner.os == 'macOS'
         run: sh packaging/macos/make_dmg.sh "$MIHENK_VERSION"
@@ -204,10 +217,18 @@ jobs:
           mkdir -p "$mountpoint"
           hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" "$dmg"
           ls -la "$mountpoint"
+          layout_ok=1
           if [ ! -d "$mountpoint/mihenk.app" ]; then
-            echo "::warning::mihenk.app is not at the root of the disk image; check the listing above."
+            echo "::error::mihenk.app is not at the root of the disk image; check the listing above."
+            layout_ok=0
           fi
-          hdiutil detach "$mountpoint"
+          # "Resource busy" is common on runners: retry, then force.
+          for attempt in 1 2 3; do
+            hdiutil detach "$mountpoint" && break
+            sleep 5
+          done || true
+          if mount | grep -q " on $mountpoint "; then hdiutil detach -force "$mountpoint"; fi
+          [ "$layout_ok" = 1 ]
 
       - name: Upload the disk image
         if: runner.os == 'macOS'

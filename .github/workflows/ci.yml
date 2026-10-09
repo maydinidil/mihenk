@@ -13,7 +13,8 @@ permissions:
 # A newer push to the same ref makes the older run pointless.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on pull requests only; every push keeps its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:

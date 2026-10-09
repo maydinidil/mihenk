@@ -10,6 +10,7 @@ keys.json
 /build/
 /dist/
 /web/node_modules/
+/web/tsconfig.tsbuildinfo
 THIRD_PARTY_NOTICES.txt
 # Microsoft's WebView2 bootstrapper, downloaded at build time (Task 0.8); never committed
 packaging/windows/MicrosoftEdgeWebview2Setup.exe

@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["405 Kč / měsíc", "Denní záloha"],
+  "fetch_text_lacks": ["M96 256", "L205 365", "L405"],
+  "render_text_contains": ["405 Kč / měsíc", "Denní záloha"],
+  "locale": {
+    "html_lang": "cs",
+    "currency_symbols": ["Kč"]
+  }
+}

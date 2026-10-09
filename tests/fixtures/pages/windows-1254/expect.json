@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Aylık 199 TL", "Fiyatlara KDV dahildir", "Başlangıç", "İletişim", "öğrenci"],
+  "render_text_contains": ["Aylık 199 TL", "Fiyatlara KDV dahildir", "Başlangıç", "İletişim", "öğrenci"],
+  "locale": {
+    "html_lang": "tr",
+    "currency_symbols": ["TL"],
+    "vat_phrases": [{"language": "tr", "kind": "incl", "phrase": "KDV dahil"}]
+  }
+}

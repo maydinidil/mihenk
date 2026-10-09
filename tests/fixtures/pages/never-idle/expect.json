@@ -1,0 +1,10 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Solo plan", "€15 / month"],
+  "render_text_contains": ["Solo plan", "€15 / month"],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Hello from the test site."],
+  "render_text_contains": ["Hello from the test site."],
+  "locale": {
+    "html_lang": "en"
+  }
+}

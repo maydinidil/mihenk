@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["24 € par utilisateur et par mois", "prix HT"],
+  "render_text_contains": ["24 € par utilisateur et par mois", "prix HT"],
+  "locale": {
+    "html_lang": "fr",
+    "currency_symbols": ["€"],
+    "vat_phrases": [{"language": "fr", "kind": "excl", "phrase": "HT"}]
+  }
+}

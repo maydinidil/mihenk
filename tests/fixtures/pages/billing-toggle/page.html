@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contoso CRM pricing</title>
+<style>
+  body { font-family: sans-serif; margin: 2rem auto; max-width: 40rem; }
+  button { padding: 0.5rem 1rem; }
+  button[aria-pressed="true"] { font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>Contoso CRM</h1>
+<p>Choose how you would like to pay.</p>
+<div role="group" aria-label="Billing period">
+  <button type="button" id="pick-annual" aria-pressed="true">Annual</button>
+  <button type="button" id="pick-monthly" aria-pressed="false">Monthly</button>
+</div>
+<h2>Team plan</h2>
+<p id="price">€24 / month, billed yearly</p>
+<script>
+(function () {
+  var prices = {
+    annual: "€24 / month, billed yearly",
+    monthly: "€29 / month, billed monthly"
+  };
+  var annual = document.getElementById("pick-annual");
+  var monthly = document.getElementById("pick-monthly");
+  var price = document.getElementById("price");
+  function choose(period) {
+    price.textContent = prices[period];
+    annual.setAttribute("aria-pressed", String(period === "annual"));
+    monthly.setAttribute("aria-pressed", String(period === "monthly"));
+  }
+  annual.addEventListener("click", function () { choose("annual"); });
+  monthly.addEventListener("click", function () { choose("monthly"); });
+})();
+</script>
+</body>
+</html>

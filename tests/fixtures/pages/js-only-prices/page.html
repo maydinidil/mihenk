@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Hosting plans</title>
+<style>
+  body { font-family: sans-serif; margin: 2rem auto; max-width: 40rem; }
+  .plan { border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<h1>Northwind Hosting</h1>
+<p>Web hosting for small sites.</p>
+<div id="plans"><p>Loading plans...</p></div>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var plans = [
+    { name: "Basic", amount: 9, unit: "month" },
+    { name: "Plus", amount: 29, unit: "month" },
+    { name: "Pro", amount: 79, unit: "month" }
+  ];
+  var root = document.getElementById("plans");
+  root.textContent = "";
+  plans.forEach(function (plan) {
+    var card = document.createElement("div");
+    card.className = "plan";
+    var title = document.createElement("h2");
+    title.textContent = plan.name;
+    var price = document.createElement("p");
+    price.textContent = "€" + plan.amount + " / " + plan.unit;
+    card.appendChild(title);
+    card.appendChild(price);
+    root.appendChild(card);
+  });
+});
+</script>
+</body>
+</html>

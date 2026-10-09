@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["19 € por usuario y mes", "IVA incluido"],
+  "render_text_contains": ["19 € por usuario y mes", "IVA incluido"],
+  "locale": {
+    "html_lang": "es",
+    "currency_symbols": ["€"],
+    "vat_phrases": [{"language": "es", "kind": "incl", "phrase": "IVA incluido"}]
+  }
+}

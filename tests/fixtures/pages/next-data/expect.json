@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Small", "€12 / month", "Medium", "€34 / month", "Large", "€88 / month"],
+  "render_text_contains": ["Small", "€12 / month", "Medium", "€34 / month", "Large", "€88 / month"],
+  "structured": [{"kind": "next_data", "problem": null}],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"]
+  }
+}

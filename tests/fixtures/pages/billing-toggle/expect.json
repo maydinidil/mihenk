@@ -1,0 +1,25 @@
+{
+  "methods": ["fetch", "render", "render_interact"],
+  "status": "ok",
+  "fetch_text_contains": ["€24 / month, billed yearly"],
+  "fetch_text_lacks": ["billed monthly"],
+  "render_text_contains": ["€24 / month, billed yearly"],
+  "states": [
+    {
+      "label": "annual",
+      "actions": [],
+      "text_contains": ["€24 / month, billed yearly"],
+      "text_lacks": ["billed monthly"]
+    },
+    {
+      "label": "monthly",
+      "actions": [{"kind": "click_text", "text": "Monthly"}],
+      "text_contains": ["€29 / month, billed monthly"],
+      "text_lacks": []
+    }
+  ],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "needs_human",
+  "locale": {
+    "html_lang": "en"
+  }
+}

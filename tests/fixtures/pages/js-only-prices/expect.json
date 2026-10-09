@@ -1,0 +1,10 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Northwind Hosting"],
+  "fetch_text_lacks": ["€9 / month", "€29 / month", "€79 / month"],
+  "render_text_contains": ["Basic", "€9 / month", "€29 / month", "€79 / month"],
+  "locale": {
+    "html_lang": "en"
+  }
+}

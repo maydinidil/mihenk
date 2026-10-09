@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Aylık 249 TL", "KDV DAHİL"],
+  "render_text_contains": ["Aylık 249 TL", "KDV DAHİL"],
+  "locale": {
+    "html_lang": "tr",
+    "currency_symbols": ["TL"],
+    "vat_phrases": [{"language": "tr", "kind": "incl", "phrase": "KDV DAHİL"}]
+  }
+}

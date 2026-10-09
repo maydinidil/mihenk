@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["€49 / month"],
+  "fetch_text_lacks": ["€ 4", "4 9"],
+  "render_text_contains": ["€49 / month"],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"]
+  }
+}

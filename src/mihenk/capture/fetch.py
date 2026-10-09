@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import codecs
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import httpx2 as http
@@ -15,6 +17,10 @@ from mihenk.capture.robots import MAX_REDIRECTS, MAX_ROBOTS_BYTES, RobotsFetch
 
 MAX_PAGE_BYTES = 15 * 1024 * 1024
 KEPT_HEADERS = ("content-type", "content-language", "server", "cf-mitigated", "cf-ray")
+# The longest one fetch may take from its first request to its last byte. httpx2's own timeouts
+# apply to each connect, read and write, so a server that trickles bytes would never trip them.
+PAGE_DEADLINE_S = 90.0
+ROBOTS_DEADLINE_S = 30.0
 _META_CHARSET = re.compile(
     rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_.:-]+)""", re.IGNORECASE
 )
@@ -39,13 +45,21 @@ class FetchedPage:
     encoding: str
 
 
+# Browsers read these labels as the Windows code page that extends them (WHATWG Encoding
+# Standard), and real pages rely on it: a page labelled iso-8859-1 or us-ascii holds curly quotes
+# and the euro sign. Python's codec table would turn those bytes into control characters or
+# U+FFFD. Keys are the names `codecs.lookup` normalises the labels to (latin1, l1, us-ascii...).
+_WHATWG_CODEC = {"iso8859-1": "cp1252", "ascii": "cp1252", "iso8859-9": "cp1254"}
+
+
 def _codec(name: str | None) -> str | None:
     if not name:
         return None
     try:
-        return codecs.lookup(name).name
+        normalised = codecs.lookup(name).name
     except LookupError:
         return None
+    return _WHATWG_CODEC.get(normalised, normalised)
 
 
 def decode_html(body: bytes, content_type: str | None) -> tuple[str, str]:
@@ -83,7 +97,44 @@ def make_client(accept_language: str, timeout_s: float = 30.0) -> http.Client:
     )
 
 
-def _read_capped(response: http.Response, cap: int) -> bytes:
+class _DeadlinePassed(Exception):
+    """Internal: the fetch ran out of time. Each public function turns it into its own result."""
+
+
+def _check_deadline(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        raise _DeadlinePassed
+
+
+@contextmanager
+def _open(client: http.Client, url: str, deadline: float) -> Iterator[http.Response]:
+    """The final response of a GET, its body still unread.
+
+    Redirects are followed here, not by httpx2, which reads a redirect's body in full before it
+    follows: an endless or huge 3xx body would sit outside the size caps and the deadline. A
+    redirect's response is closed unread. At most MAX_REDIRECTS are followed; the next one raises
+    `TooManyRedirects`. The deadline is checked before every request.
+    """
+    request = client.build_request("GET", url)
+    redirects = 0
+    while True:
+        _check_deadline(deadline)
+        response = client.send(request, stream=True, follow_redirects=False)
+        following = response.next_request
+        if following is None:
+            break
+        response.close()
+        if redirects >= MAX_REDIRECTS:
+            raise http.TooManyRedirects("Exceeded maximum allowed redirects.", request=request)
+        redirects += 1
+        request = following
+    try:
+        yield response
+    finally:
+        response.close()
+
+
+def _read_capped(response: http.Response, cap: int, deadline: float) -> bytes:
     chunks: list[bytes] = []
     size = 0
     for chunk in response.iter_bytes():
@@ -91,18 +142,24 @@ def _read_capped(response: http.Response, cap: int) -> bytes:
         if size > cap:
             raise FetchFailure(CaptureStatus.TOO_LARGE, f"larger than {cap} bytes")
         chunks.append(chunk)
+        _check_deadline(deadline)
     return b"".join(chunks)
 
 
-def fetch_page(client: http.Client, url: str) -> FetchedPage:
+def fetch_page(
+    client: http.Client, url: str, *, deadline_s: float = PAGE_DEADLINE_S
+) -> FetchedPage:
+    deadline = time.monotonic() + deadline_s
     try:
-        with client.stream("GET", url) as response:
-            raw = _read_capped(response, MAX_PAGE_BYTES)
+        with _open(client, url, deadline) as response:
+            raw = _read_capped(response, MAX_PAGE_BYTES, deadline)
             headers = {k: response.headers[k] for k in KEPT_HEADERS if k in response.headers}
             html, encoding = decode_html(raw, response.headers.get("content-type"))
             return FetchedPage(
                 url, str(response.url), response.status_code, headers, raw, html, encoding
             )
+    except _DeadlinePassed:
+        raise FetchFailure(CaptureStatus.TIMEOUT, f"deadline of {deadline_s:g} s passed") from None
     except http.TimeoutException as exc:
         raise FetchFailure(CaptureStatus.TIMEOUT, f"timed out: {exc}") from exc
     except http.TooManyRedirects as exc:
@@ -115,16 +172,22 @@ def fetch_page(client: http.Client, url: str) -> FetchedPage:
         raise FetchFailure(CaptureStatus.HTTP_ERROR, f"unreadable: {exc}") from exc
 
 
-def fetch_robots(client: http.Client, url: str) -> RobotsFetch:
+def fetch_robots(
+    client: http.Client, url: str, *, deadline_s: float = ROBOTS_DEADLINE_S
+) -> RobotsFetch:
     """Never raises: every failure is a `RobotsFetch` with no status, which `decide` disallows."""
+    deadline = time.monotonic() + deadline_s
     try:
-        with client.stream("GET", url) as response:
+        with _open(client, url, deadline) as response:
             body = b""
             for chunk in response.iter_bytes():
                 body += chunk
                 if len(body) >= MAX_ROBOTS_BYTES:
                     break  # RFC 9309 lets crawlers stop parsing after the limit
+                _check_deadline(deadline)
             return RobotsFetch(response.status_code, body[:MAX_ROBOTS_BYTES], "fetched")
+    except _DeadlinePassed:
+        return RobotsFetch(None, None, "unreachable: deadline passed")
     except http.TooManyRedirects:
         return RobotsFetch(None, None, f"unreachable: more than {MAX_REDIRECTS} redirects")
     except (http.HTTPError, http.InvalidURL, UnicodeError) as exc:

@@ -28,9 +28,9 @@ source), not from the web. Nothing was fetched from a live site.
 |---|---|---|
 | Import name | `httpx2` | Yes |
 | `Client(headers=, timeout=, follow_redirects=, max_redirects=)` | All four are keyword arguments of `Client` | Yes |
-| Redirect limit | The default is 20, so the code sets 5. With `max_redirects=5` the fifth redirect is followed and the sixth raises `TooManyRedirects` | Yes, tested at 5 and 6 |
+| Redirect limit | The default is 20, so `make_client` sets 5. With `max_redirects=5` the fifth redirect is followed and the sixth raises `TooManyRedirects`. The fetch code does not use this: it follows redirects itself (see "How time, size and redirects are bounded") with the same limit | Yes, tested at 5 and 6 |
 | `client.stream("GET", url)` with `iter_bytes()` | `stream` is a context manager that returns before the body is read. `iter_bytes()` yields the decoded body (gzip, deflate) in chunks, so a size cap counts decoded bytes | Yes |
-| Leaving the `with` early | Closes the connection without reading the rest | Yes, tested with a body that would never end |
+| Closing a response early (leaving the `with`, or `response.close()` on a redirect) | Closes the connection without reading the rest | Yes, tested with bodies that would never end |
 | `TimeoutException` | A subclass of `TransportError` | Yes |
 | `TooManyRedirects` | A subclass of `RequestError`, **not** of `TransportError`, so it needs its own `except` | Yes |
 | `TransportError` | Connection, read and protocol errors | Yes |
@@ -56,8 +56,25 @@ Behaviours to know about:
 |---|---|
 | TLS uses the operating system's trust store (`truststore`) | A company laptop whose own certificate authority is installed works without extra setup |
 | `trust_env` is on by default | `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` apply, so a user behind a proxy captures too. On a test machine with a proxy variable set, the loopback tests could be sent to that proxy, and the network guard would stop them (not tried here: this machine has none set) |
-| Timeouts apply to each connect, read and write, not to the whole request | A server that sends one byte every few seconds is not cut off by `timeout_s`. The size cap bounds it for pages. Task 1.9 may add a deadline for a whole capture |
-| Redirect bodies are read in full before the redirect is followed | They are not covered by the size cap. The per-read timeout is the only bound |
+| Timeouts apply to each connect, read and write, not to the whole request | A server that sends one byte every few seconds is never cut off by `timeout_s`. Both fetch functions therefore take a `deadline_s` (below) |
+| `Client` follows redirects by reading each redirect's body in full first | A 3xx with a huge or endless body sat outside the size caps and the deadline (a 100 MiB body was read, with about 200 MiB peak memory). The fetch code follows redirects itself and never reads a redirect's body |
+
+## How time, size and redirects are bounded
+
+| Bound | Pages (`fetch_page`) | `robots.txt` (`fetch_robots`) |
+|---|---|---|
+| Time for the whole fetch, first request to last byte | `deadline_s`, default 90 s. Passed: `FetchFailure(TIMEOUT, "deadline of N s passed")` | `deadline_s`, default 30 s. Passed: `RobotsFetch(None, None, "unreachable: deadline passed")` |
+| Where the deadline is checked | Before every request, and after every chunk of body | The same |
+| Size | 15 MiB after decompression, then `FetchFailure(TOO_LARGE)` | Reading stops at 512 KiB; the rest is not read |
+| Redirects | At most 5 are followed; the sixth fails as `HTTP_ERROR` "more than 5 redirects" | At most 5; the sixth gives `RobotsFetch(None, None, "unreachable: more than 5 redirects")` |
+
+How a redirect is followed: the request is sent with `follow_redirects=False` and `stream=True`.
+On a 3xx with a `Location`, the response is closed without reading its body, and the next request
+is the one httpx2 prepared (`response.next_request`). The answer that is not a redirect is the
+one whose body is read. `final_url` is that response's URL.
+
+A single read can still block for up to `timeout_s` after the deadline has passed, so a fetch ends
+within `deadline_s` plus about one `timeout_s`.
 
 ## Not checked here
 
@@ -67,5 +84,5 @@ Behaviours to know about:
 
 ## Check
 
-`uv run pytest tests/integration/test_fetch.py tests/integration/test_robots_fetch.py tests/unit/test_decode.py -v`
+`uv run pytest tests/integration/test_fetch.py tests/integration/test_fetch_limits.py tests/integration/test_robots_fetch.py tests/unit/test_decode.py -v`
 passes, and `uv run python tools/check_licenses.py` exits 0.

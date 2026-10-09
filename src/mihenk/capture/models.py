@@ -2,8 +2,9 @@ import re
 from enum import StrEnum
 
 # Run ids, page keys and state labels become folder names: lowercase, no separators.
-# `\Z`, not `$`: `$` would also accept a trailing newline.
-SAFE_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}\Z")
+# `\Z`, not `$`: `$` would also accept a trailing newline. The lookahead refuses the names
+# Windows reserves for devices: a folder called `nul` cannot be created there.
+SAFE_SEGMENT = re.compile(r"^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])\Z)[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 
 class Method(StrEnum):

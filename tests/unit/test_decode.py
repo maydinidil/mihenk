@@ -1,4 +1,5 @@
 from mihenk.capture.fetch import decode_html
+from tests.helpers.pages import PAGES_DIR, load_expectations
 
 TURKISH = "<meta charset='windows-1254'><p>Aylık 199 TL, Fiyatlara KDV dahildir. İstanbul şube</p>"
 
@@ -64,3 +65,58 @@ def test_a_declared_charset_that_is_not_a_text_encoding_falls_back_to_utf8() -> 
 
 def test_empty_body() -> None:
     assert decode_html(b"", None) == ("", "utf-8")
+
+
+# Browsers read these labels as Windows code pages (WHATWG), and pages depend on it.
+
+# Curly quotes, an en dash (U+2013), the euro sign and an ellipsis: all in windows-1252 only.
+EN_DASH, LEFT_QUOTE = chr(0x2013), chr(0x2018)
+CP1252_TEXT = f"Plan “Pro” {EN_DASH} €29, {LEFT_QUOTE}ek’ …"
+LATIN1_LABELS = ("iso-8859-1", "ISO-8859-1", "iso_8859-1", "latin1", "latin-1", "l1", "cp819")
+ASCII_LABELS = ("us-ascii", "ascii", "iso-ir-6", "ansi_x3.4-1968")
+LATIN5_LABELS = ("iso-8859-9", "latin5", "l5", "iso8859-9", "iso_8859-9")
+
+
+def test_latin1_and_ascii_labels_in_the_header_are_read_as_windows_1252() -> None:
+    body = CP1252_TEXT.encode("cp1252")
+    for label in (*LATIN1_LABELS, *ASCII_LABELS):
+        text, encoding = decode_html(body, f"text/html; charset={label}")
+        assert (text, encoding) == (CP1252_TEXT, "cp1252"), label
+
+
+def test_latin1_and_ascii_labels_in_a_meta_tag_are_read_as_windows_1252() -> None:
+    for label in (*LATIN1_LABELS, *ASCII_LABELS):
+        page = f"<meta charset={label}><p>{CP1252_TEXT}</p>".encode("cp1252")
+        text, encoding = decode_html(page, "text/html")
+        assert text.endswith(f"<p>{CP1252_TEXT}</p>"), label
+        assert encoding == "cp1252", label
+        page = f"<meta http-equiv='Content-Type' content='text/html; charset={label}'>€9"
+        text, encoding = decode_html(page.encode("cp1252"), None)
+        assert text.endswith("€9"), label
+        assert encoding == "cp1252", label
+
+
+def test_latin5_labels_are_read_as_windows_1254() -> None:
+    turkish = "Aylık €199, İstanbul şube, Fiyatlara KDV dahildir"
+    body = turkish.encode("cp1254")
+    for label in LATIN5_LABELS:
+        text, encoding = decode_html(body, f"text/html; charset={label}")
+        assert (text, encoding) == (turkish, "cp1254"), label
+        page = f"<meta charset={label}>{turkish}".encode("cp1254")
+        text, encoding = decode_html(page, "text/html")
+        assert text.endswith(turkish), label
+        assert encoding == "cp1254", label
+
+
+def test_other_iso_labels_are_not_remapped() -> None:
+    polish = "Zażółć gęślą jaźń"
+    text, encoding = decode_html(polish.encode("iso8859-2"), "text/html; charset=iso-8859-2")
+    assert (text, encoding) == (polish, "iso8859-2")
+
+
+def test_the_windows_1254_trap_page_still_decodes() -> None:
+    body = (PAGES_DIR / "windows-1254" / "page.html").read_bytes()
+    text, encoding = decode_html(body, "text/html")
+    assert encoding == "cp1254"
+    for expected in load_expectations("windows-1254")["fetch_text_contains"]:
+        assert expected in text

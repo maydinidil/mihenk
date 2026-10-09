@@ -1,0 +1,26 @@
+# Secrets: API keys never live in this repository
+.env
+.env.*
+!.env.example
+keys.json
+*.key
+
+# Build output and generated files
+/src/mihenk/web_dist/
+/build/
+/dist/
+/web/node_modules/
+THIRD_PARTY_NOTICES.txt
+# Microsoft's WebView2 bootstrapper, downloaded at build time (Task 0.8); never committed
+packaging/windows/MicrosoftEdgeWebview2Setup.exe
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local run data (snapshots, logs, browsers) never goes in the repository
+/runs/
+/snapshots/

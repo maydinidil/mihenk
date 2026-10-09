@@ -1,20 +1,24 @@
 """Rendering pages in the installed browser (design §8.3).
 
-Each call opens a fresh browser context (no cookies carried over, downloads off) and closes
-it. Each state is a fresh page and navigation followed by its actions. Pages that never go
-network-idle are normal: the idle wait is capped and the capture continues. A browser error
-in one state (a timeout, a refused connection, an aborted navigation) is that state's
-`StateFailure`; the next state still runs.
+Each call opens a fresh browser context (no cookies carried over, downloads off, no service
+workers) and closes it. Each state is a fresh page and navigation followed by its actions. Pages
+that never go network-idle are normal: the wait for quiet is capped and the capture continues. A
+browser error in one state (a timeout, a refused connection, an aborted navigation) is that
+state's `StateFailure`; the next state still runs.
+
+Every call that reads the page carries a timeout, so a page that spins forever in JavaScript is a
+`TIMEOUT` and not a hang.
 """
 
 from __future__ import annotations
 
 import contextlib
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from playwright.sync_api import Browser, Page
+from playwright.sync_api import Browser, Dialog, Page, Request, Response
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -53,6 +57,22 @@ class _ActionFailed(Exception):
     pass
 
 
+# How long no request may start or finish before the page counts as quiet (Playwright's own
+# "networkidle" uses the same 500 ms), and how often the wait looks again.
+_QUIET_S = 0.5
+_POLL_S = 0.1
+# The scroll that wakes lazy loading is best effort, so it gives up sooner than a read does.
+_SCROLL_TIMEOUT_S = 2.0
+_SCROLL_JS = (
+    "() => { window.scrollTo(0, document.body ? document.body.scrollHeight : 0); return true; }"
+)
+# What `page.content()` reads, through a call that has a timeout.
+_HTML_JS = """(root) => {
+  const doc = root.ownerDocument;
+  const doctype = doc.doctype ? new XMLSerializer().serializeToString(doc.doctype) : "";
+  return doctype + root.outerHTML;
+}"""
+
 # A rendered DOM can hold half of a surrogate pair. Writing it into a snapshot would raise
 # `UnicodeEncodeError`, so it becomes U+FFFD, which is what a UTF-8 decoder would show.
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
@@ -62,12 +82,68 @@ def _replace_lone_surrogates(text: str) -> str:
     return _LONE_SURROGATE.sub("\ufffd", text)
 
 
-def _settle(page: Page, settings: RenderSettings) -> None:
-    with contextlib.suppress(PlaywrightTimeoutError):
-        page.wait_for_load_state("networkidle", timeout=settings.idle_cap_s * 1000)
-    # Best effort: there may be no body, or a navigation may be in flight.
+def _dismiss(dialog: Dialog) -> None:
+    # Playwright dismisses dialogs itself when nobody listens, but a page that opens one in a
+    # loop can then crash the driver while the page is closing. Doing it here is safe.
     with contextlib.suppress(PlaywrightError):
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        dialog.dismiss()
+
+
+class _PageWatch:
+    """What the page reports while it is driven: requests in flight and the last navigation.
+
+    Registered before the first navigation. `networkidle` fires once per document, so it says
+    nothing about a request that a click starts; counting the requests does.
+    """
+
+    def __init__(self, page: Page) -> None:
+        self._page = page
+        self._in_flight: set[Request] = set()
+        self.last_activity = time.monotonic()
+        self.navigation: Response | None = None
+        page.on("request", self._started)
+        page.on("requestfinished", self._ended)
+        page.on("requestfailed", self._ended)
+        page.on("response", self._responded)
+        page.on("dialog", _dismiss)
+
+    @property
+    def busy(self) -> bool:
+        return bool(self._in_flight)
+
+    def touch(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def _started(self, request: Request) -> None:
+        self._in_flight.add(request)
+        self.touch()
+
+    def _ended(self, request: Request) -> None:
+        self._in_flight.discard(request)
+        self.touch()
+
+    def _responded(self, response: Response) -> None:
+        # The last answer to a navigation of the page itself: a reload or a click that opens
+        # another page replaces the first one. Frames and subresources do not count.
+        with contextlib.suppress(PlaywrightError):
+            if response.request.is_navigation_request() and response.frame == self._page.main_frame:
+                self.navigation = response
+
+
+def _settle(page: Page, watch: _PageWatch, settings: RenderSettings) -> None:
+    """Wait until no request has been in flight for 500 ms, but at most `idle_cap_s`."""
+    watch.touch()  # an action's own request may not have been reported yet
+    deadline = time.monotonic() + settings.idle_cap_s
+    while True:
+        now = time.monotonic()
+        if not watch.busy and now - watch.last_activity >= _QUIET_S:
+            break
+        if now >= deadline:
+            break
+        page.wait_for_timeout(_POLL_S * 1000)
+    # Best effort: there may be no body, the page may be busy, or a navigation may be in flight.
+    with contextlib.suppress(PlaywrightError):
+        page.wait_for_function(_SCROLL_JS, timeout=_SCROLL_TIMEOUT_S * 1000)
     page.wait_for_timeout(settings.settle_s * 1000)
 
 
@@ -85,17 +161,20 @@ def _perform(page: Page, action: Action) -> None:
 
 
 def _capture_state(page: Page, url: str, state: State, settings: RenderSettings) -> RenderedState:
-    response = page.goto(url, wait_until="domcontentloaded")
-    _settle(page, settings)
+    watch = _PageWatch(page)
+    first = page.goto(url, wait_until="domcontentloaded")
+    _settle(page, watch, settings)
     for action in state.actions:
         _perform(page, action)
-        _settle(page, settings)
+        _settle(page, watch, settings)
+    html = page.locator(":root").evaluate(_HTML_JS, timeout=settings.navigation_timeout_s * 1000)
+    response = watch.navigation or first
     return RenderedState(
         label=state.label,
         final_url=page.url,
         status=response.status if response is not None else None,
         headers=dict(response.headers) if response is not None else {},
-        html=_replace_lone_surrogates(page.content()),
+        html=_replace_lone_surrogates(html),
         visible_text=canonical_text(_replace_lone_surrogates(page.inner_text("body"))),
         screenshot_png=page.screenshot(full_page=True),
     )
@@ -108,7 +187,9 @@ def render_states(
     settings: RenderSettings,
     before_navigation: Callable[[], object],
 ) -> list[RenderedState | StateFailure]:
-    context = browser.new_context(accept_downloads=False, locale=settings.locale)
+    context = browser.new_context(
+        accept_downloads=False, locale=settings.locale, service_workers="block"
+    )
     results: list[RenderedState | StateFailure] = []
     try:
         for state in recipe.states:
@@ -124,6 +205,8 @@ def render_states(
             except PlaywrightTimeoutError as exc:
                 results.append(StateFailure(state.label, CaptureStatus.TIMEOUT, str(exc)))
             except PlaywrightError as exc:
+                if not browser.is_connected():
+                    raise  # A browser that died is not the vendor's HTTP error.
                 # Connection refused, a name that does not resolve, an aborted navigation.
                 results.append(StateFailure(state.label, CaptureStatus.HTTP_ERROR, str(exc)))
             finally:

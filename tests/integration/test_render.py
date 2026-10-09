@@ -73,6 +73,7 @@ def test_rendered_state_carries_the_response_and_a_screenshot(
     assert state.final_url == url
     assert state.status == 200
     assert state.headers["content-type"] == "text/html; charset=utf-8"
+    assert state.html.startswith("<!DOCTYPE html>")
     assert "<title>Contoso CRM pricing</title>" in state.html
     assert state.visible_text.endswith("\n")
     assert state.screenshot_png.startswith(b"\x89PNG\r\n\x1a\n")
@@ -318,3 +319,146 @@ document.getElementById("out").textContent = "price \\ud83d 9";
     state.visible_text.encode("utf-8")
     assert "price \ufffd 9" in state.visible_text
     assert "\ufffd" in state.html
+
+
+# A page that never gives control back must end as a TIMEOUT, not as a hang. The first spins in
+# JavaScript after it has loaded; the second opens a dialog again and again.
+SPINNING_PAGES = {
+    "spin": "<!doctype html><title>Spin</title><p>hello</p>"
+    "<script>setTimeout(function () { while (true) {} }, 300);</script>",
+    "dialogs": "<!doctype html><title>Dialogs</title><p>hello</p>"
+    "<script>window.addEventListener('load', function () {"
+    " setTimeout(function () { while (true) { alert(1); } }, 300); });</script>",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(SPINNING_PAGES))
+def test_a_page_that_never_gives_control_back_is_a_timeout(
+    kind: str, site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    site.add(f"/{kind}", SPINNING_PAGES[kind])
+    settings = RenderSettings(navigation_timeout_s=3.0, settle_s=0.1)
+    started = time.monotonic()
+    results = render_states(browser.browser, site.url(f"/{kind}"), _single(), settings, _no_pacing)
+    elapsed = time.monotonic() - started
+    assert _failure(results[0]).status is CaptureStatus.TIMEOUT
+    assert elapsed < 30
+
+
+def test_an_action_that_fetches_the_price_waits_for_the_answer(
+    site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    # The click starts a request that the server answers after 2 s; "networkidle" has fired
+    # long before, so only counting the requests in flight sees it.
+    site.add(
+        "/lazy",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Lazy</title></head>
+<body><button id="m" type="button">Monthly</button>
+<p id="price">€24 / month, billed yearly</p>
+<script>
+var price = document.getElementById("price");
+document.getElementById("m").addEventListener("click", function () {
+  price.textContent = "loading";
+  fetch("/lazy-price").then(function (r) { return r.text(); }).then(function (t) {
+    price.textContent = t;
+  });
+});
+</script></body></html>""",
+    )
+    site.add(
+        "/lazy-price",
+        "€29 / month, billed monthly",
+        content_type="text/plain; charset=utf-8",
+        delay_s=2.0,
+    )
+    recipe = Recipe(
+        method=Method.RENDER_INTERACT,
+        states=[State(label="annual"), State(label="monthly", actions=[ClickText(text="Monthly")])],
+    )
+    results = render_states(
+        browser.browser, site.url("/lazy"), recipe, RenderSettings(), _no_pacing
+    )
+    annual, monthly = (_rendered(result) for result in results)
+    assert "€24 / month, billed yearly" in annual.visible_text
+    assert "€29 / month, billed monthly" in monthly.visible_text
+    assert "loading" not in monthly.visible_text
+
+
+def test_status_and_headers_come_from_the_page_that_was_captured(
+    site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    # A wall answers 403, sets a cookie and moves on to the real page a moment later.
+    site.add(
+        "/gate",
+        "<!doctype html><title>Gate</title><p>checking</p><script>"
+        "document.cookie = 'pass=1; path=/';"
+        "setTimeout(function () { location.replace('/open'); }, 200);</script>",
+        status=403,
+        headers={"X-Page": "gate"},
+    )
+    site.add("/open", "<!doctype html><title>Open</title><p>Prices</p>", headers={"X-Page": "open"})
+    state = _rendered(
+        render_states(browser.browser, site.url("/gate"), _single(), RenderSettings(), _no_pacing)[
+            0
+        ]
+    )
+    assert state.final_url == site.url("/open")
+    assert state.status == 200
+    assert state.headers["x-page"] == "open"
+    assert "Prices" in state.visible_text
+
+
+def test_an_action_that_opens_another_page_reports_that_page(
+    site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    site.add("/start", '<!doctype html><title>Start</title><a href="/missing">Details</a>')
+    site.add("/missing", "<!doctype html><title>Gone</title><p>Page gone</p>", status=404)
+    recipe = Recipe(
+        method=Method.RENDER_INTERACT,
+        states=[State(label="start"), State(label="details", actions=[ClickText(text="Details")])],
+    )
+    results = render_states(
+        browser.browser, site.url("/start"), recipe, RenderSettings(), _no_pacing
+    )
+    start, details = (_rendered(result) for result in results)
+    assert (start.status, start.final_url) == (200, site.url("/start"))
+    assert details.final_url == site.url("/missing")
+    assert details.status == 404
+    assert "Page gone" in details.visible_text
+
+
+def test_a_service_worker_does_not_answer_for_the_server(
+    site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    # The worker would answer /data itself. Blocked, the fetch reaches the server.
+    site.add(
+        "/with-worker",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Worker</title></head>
+<body><button id="check" type="button">Check</button><p id="out">idle</p>
+<script>
+navigator.serviceWorker.register("/worker.js").catch(function () {});
+document.getElementById("check").addEventListener("click", function () {
+  fetch("/data").then(function (r) { return r.text(); }).then(function (t) {
+    document.getElementById("out").textContent = "answer: " + t;
+  });
+});
+</script></body></html>""",
+    )
+    site.add(
+        "/worker.js",
+        """self.addEventListener("install", function () { self.skipWaiting(); });
+self.addEventListener("activate", function (e) { e.waitUntil(self.clients.claim()); });
+self.addEventListener("fetch", function (e) {
+  if (new URL(e.request.url).pathname === "/data") e.respondWith(new Response("from the worker"));
+});""",
+        content_type="application/javascript",
+    )
+    site.add("/data", "from the server", content_type="text/plain")
+    recipe = Recipe(
+        method=Method.RENDER_INTERACT,
+        states=[State(label="checked", actions=[ClickText(text="Check")])],
+    )
+    results = render_states(
+        browser.browser, site.url("/with-worker"), recipe, RenderSettings(), _no_pacing
+    )
+    assert "answer: from the server" in _rendered(results[0]).visible_text

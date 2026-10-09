@@ -14,6 +14,7 @@ from mihenk.capture.snapshot import (
     new_run_id,
     write_snapshot,
 )
+from mihenk.trim.structured import StructuredBlock, StructuredKind
 
 NOW = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
 NO_MARKERS = LocaleMarkers(None, None, (), (), ())
@@ -57,6 +58,60 @@ def test_hashes_match_the_files(tmp_path: Path) -> None:
     meta = json.loads((ref.path / "meta.json").read_text("utf-8"))
     assert meta["captured_at"] == "2026-10-08T12:00:00Z"
     assert meta["collection_country"] == "NL"
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def read_meta(folder: Path) -> dict[str, object]:
+    meta: dict[str, object] = json.loads((folder / "meta.json").read_text("utf-8"))
+    return meta
+
+
+def test_meta_repeats_the_refs_hashes_and_lists_every_file(tmp_path: Path) -> None:
+    ref = write_snapshot(tmp_path, snap(screenshot_png=b"\x89PNG not really a picture"))
+    meta = read_meta(ref.path)
+    assert meta["html_sha256"] == ref.html_sha256
+    assert meta["text_sha256"] == ref.text_sha256
+    assert meta["raw_sha256"] == ref.raw_sha256
+    assert meta["files"] == ref.files
+    assert ref.files == {
+        path.name: sha256_of(path) for path in ref.path.iterdir() if path.name != "meta.json"
+    }
+
+
+def test_without_raw_bytes_there_is_no_raw_file_and_no_raw_hash(tmp_path: Path) -> None:
+    ref = write_snapshot(tmp_path, snap(raw_bytes=None, encoding=None))
+    assert not (ref.path / "page.raw").exists()
+    assert ref.raw_sha256 is None
+    assert read_meta(ref.path)["raw_sha256"] is None
+    assert "page.raw" not in ref.files
+    assert "page.raw" not in read_meta(ref.path)["files"]  # type: ignore[operator]
+
+
+def test_a_screenshot_is_written_and_hashed(tmp_path: Path) -> None:
+    picture = b"\x89PNG\r\n\x1a\n and some more bytes"
+    ref = write_snapshot(tmp_path, snap(screenshot_png=picture))
+    assert (ref.path / "screenshot.png").read_bytes() == picture
+    assert ref.files["screenshot.png"] == hashlib.sha256(picture).hexdigest()
+
+
+def test_the_folder_holds_exactly_the_listed_files_and_meta(tmp_path: Path) -> None:
+    for changes in ({}, {"raw_bytes": None}, {"screenshot_png": b"png"}):
+        ref = write_snapshot(tmp_path, snap(run_id=new_run_id(NOW), **changes))
+        assert {path.name for path in ref.path.iterdir()} == {*ref.files, "meta.json"}
+        assert {"page.html", "text.txt", "structured.json"} <= set(ref.files)
+
+
+def test_json_files_have_no_windows_line_endings(tmp_path: Path) -> None:
+    block = StructuredBlock(StructuredKind.JSONLD, 0, None, None, 20, {"a": [1, 2], "b": "İ"}, None)
+    ref = write_snapshot(tmp_path, snap(structured=[block]))
+    for name in ("meta.json", "structured.json"):
+        data = (ref.path / name).read_bytes()
+        assert b"\r" not in data
+        assert b"\n" in data
+    assert ref.files["structured.json"] == sha256_of(ref.path / "structured.json")
 
 
 def test_turkish_text_survives_snapshot(tmp_path: Path) -> None:

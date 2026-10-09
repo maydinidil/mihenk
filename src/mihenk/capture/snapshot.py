@@ -12,7 +12,7 @@ import json
 import secrets
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -61,6 +61,9 @@ class SnapshotRef:
     html_sha256: str
     text_sha256: str
     raw_sha256: str | None
+    # SHA-256 of every file in the folder except meta.json, which holds this map. A snapshot is
+    # immutable, so a file written without a hash here can never get one later.
+    files: Mapping[str, str]
 
 
 def new_run_id(now: datetime) -> str:
@@ -97,23 +100,30 @@ def write_snapshot(root: Path, snap: SnapshotInput) -> SnapshotRef:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=_TEMP_PREFIX, dir=target.parent))
     try:
-        html_bytes = snap.html.encode("utf-8")
-        text_bytes = snap.text.encode("utf-8")
-        (tmp / "page.html").write_bytes(html_bytes)
-        (tmp / "text.txt").write_bytes(text_bytes)
+        # Every file is written as bytes and hashed over those same bytes. JSON is encoded here,
+        # once, because `write_text` would turn "\n" into "\r\n" on Windows and the same snapshot
+        # would then hash differently on Windows and macOS.
+        contents: dict[str, bytes] = {
+            "page.html": snap.html.encode("utf-8"),
+            "text.txt": snap.text.encode("utf-8"),
+        }
         if snap.raw_bytes is not None:
-            (tmp / "page.raw").write_bytes(snap.raw_bytes)
+            contents["page.raw"] = snap.raw_bytes
         if snap.screenshot_png is not None:
-            (tmp / "screenshot.png").write_bytes(snap.screenshot_png)
+            contents["screenshot.png"] = snap.screenshot_png
         structured = [block_to_json(block) for block in snap.structured]
-        (tmp / "structured.json").write_text(
-            json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8"
+        contents["structured.json"] = json.dumps(structured, ensure_ascii=False, indent=2).encode(
+            "utf-8"
         )
+        for name, data in contents.items():
+            (tmp / name).write_bytes(data)
+        files = {name: _sha256(data) for name, data in contents.items()}
         ref = SnapshotRef(
             target,
-            _sha256(html_bytes),
-            _sha256(text_bytes),
-            _sha256(snap.raw_bytes) if snap.raw_bytes is not None else None,
+            files["page.html"],
+            files["text.txt"],
+            files.get("page.raw"),
+            files,
         )
         meta = {
             "app_version": __version__,
@@ -131,9 +141,10 @@ def write_snapshot(root: Path, snap: SnapshotInput) -> SnapshotRef:
             "html_sha256": ref.html_sha256,
             "text_sha256": ref.text_sha256,
             "raw_sha256": ref.raw_sha256,
+            "files": files,
         }
-        (tmp / "meta.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        (tmp / "meta.json").write_bytes(
+            json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
         )
         tmp.rename(target)
     except BaseException:

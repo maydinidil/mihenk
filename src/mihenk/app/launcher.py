@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import secrets
 import socket
 import threading
@@ -39,6 +40,14 @@ def new_token() -> str:
 def bind_loopback() -> socket.socket:
     """A socket on 127.0.0.1 with a free port, handed to uvicorn so no other process can take it."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Windows only: no other program may bind this port while we hold it, whatever options it
+    # sets, so none can be handed connections that carry the token. This is Microsoft's guard
+    # against port hijacking; Windows 11 already refuses the common case, and this makes it
+    # explicit. It must come before bind(). getattr keeps the file type-checkable on macOS, where
+    # the constant does not exist.
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:
+        sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
     sock.bind(("127.0.0.1", 0))
     return sock
 
@@ -50,6 +59,38 @@ def launch_url(port: int, token: str, *, smoke: bool = False) -> str:
 
 def bundled_web_dist() -> Path:
     return Path(str(resources.files("mihenk") / "web_dist"))
+
+
+_TOKEN_IN_TEXT = re.compile(r"token=[^&\s'\"#]+")
+
+
+class TokenRedactingFilter(logging.Filter):
+    """Replaces token=<value> with token=<redacted> in a log record's message.
+
+    pywebview logs the address it loads (Window.load_url, at PYWEBVIEW_LOG=DEBUG), and that
+    address carries the one-time key. The key is in msg or in args depending on how the line
+    was logged, so this looks at the formatted message. A record that cannot be formatted is dropped: the handler
+    would fail on it anyway, and an unchecked message must not reach the file.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return False
+        redacted = _TOKEN_IN_TEXT.sub("token=<redacted>", message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = None
+        return True
+
+
+_PYWEBVIEW_FILTER = TokenRedactingFilter()
+
+
+def redact_tokens_in_pywebview_log() -> None:
+    """Every pywebview module logs through the "pywebview" logger, so one filter covers them."""
+    logging.getLogger("pywebview").addFilter(_PYWEBVIEW_FILTER)  # a second call adds nothing
 
 
 class ServerThread:
@@ -80,7 +121,9 @@ class ServerThread:
 
     def stop(self, timeout_s: float = 10.0) -> None:
         self._server.should_exit = True
-        self._thread.join(timeout_s)
+        # join() raises on a thread that never started, which is what a failed start() leaves.
+        if self._thread.is_alive():
+            self._thread.join(timeout_s)
         self._sock.close()
 
     @property
@@ -95,6 +138,23 @@ def run_window(url: str) -> None:
     webview.start()
 
 
+_POLL_S = 0.05
+
+
+def wait_for_connect_or_close(
+    signal: SmokeSignal, window_closed: threading.Event, timeout_s: float
+) -> None:
+    """Returns when the screens connect, the window closes, or timeout_s has passed."""
+    deadline = time.monotonic() + timeout_s
+    while not (signal.event.is_set() or window_closed.is_set()):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        # Two events cannot be waited on at once: sleep on the one that ends the wait at once
+        # and look at the other every few milliseconds.
+        window_closed.wait(min(_POLL_S, remaining))
+
+
 def run_window_smoke(url: str, signal: SmokeSignal, timeout_s: float) -> bool:
     """Opens the real window; passes when the screens reach the server within timeout_s."""
     import webview
@@ -102,10 +162,15 @@ def run_window_smoke(url: str, signal: SmokeSignal, timeout_s: float) -> bool:
     window = webview.create_window("mihenk (release check)", url)
     if window is None:  # pywebview's stub allows None; it only happens when start() cancels it
         return False
+    window_closed = threading.Event()
+    window.events.closed += window_closed.set
 
     def watch() -> None:
-        signal.event.wait(timeout_s)
-        window.destroy()
+        # The watcher is a non-daemon thread, so if it kept waiting after the window was closed
+        # the process would stay alive until the timeout ran out.
+        wait_for_connect_or_close(signal, window_closed, timeout_s)
+        if not window_closed.is_set():
+            window.destroy()
 
     webview.start(watch)
     return signal.event.is_set()
@@ -124,7 +189,12 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
         prog="mihenk", description="Track competitors' pricing and packaging."
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--browser", action="store_true", help="open the screens in your web browser")
+    mode.add_argument(
+        "--browser",
+        action="store_true",
+        help="open the screens in your web browser; the address, with its one-time key, "
+        "stays in the browser's history",
+    )
     mode.add_argument("--smoke", action="store_true", help="release check: open, connect, exit")
     parser.add_argument("--smoke-timeout", type=float, default=60.0, help=argparse.SUPPRESS)
     parser.add_argument("--data-dir", type=Path, default=None, help="use this data folder")
@@ -132,7 +202,16 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse(argv)
+    args = _parse(argv)  # --help and a bad option exit here, as argparse does
+    try:
+        return _run(args)
+    except Exception:
+        # The windowed build has no console, so mihenk.log is the only place a failure shows.
+        log.exception("mihenk stopped because of an unexpected error")
+        return 1
+
+
+def _run(args: argparse.Namespace) -> int:
     data_dir: Path = args.data_dir or default_data_dir()
     logging.basicConfig(
         filename=logs_dir(data_dir) / "mihenk.log",
@@ -140,16 +219,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         encoding="utf-8",
     )
+    redact_tokens_in_pywebview_log()
     sock = bind_loopback()
     port = int(sock.getsockname()[1])
     token = new_token()
     smoke = SmokeSignal() if args.smoke else None
     app = create_app(GuardConfig(port=port, token=token), bundled_web_dist(), smoke)
     server = ServerThread(app, sock)
-    server.start()
-    log.info("mihenk started on 127.0.0.1:%d", port)
     url = launch_url(port, token, smoke=args.smoke)
     try:
+        server.start()
+        log.info("mihenk started on 127.0.0.1:%d", port)
         if smoke is not None:
             return 0 if run_window_smoke(url, smoke, args.smoke_timeout) else 1
         if args.browser:

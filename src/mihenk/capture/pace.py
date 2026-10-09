@@ -55,7 +55,9 @@ class Pace:
     def wait(self, host: str) -> float:
         now = self._clock()
         last = self._last.get(host)
-        delay = 0.0 if last is None else max(0.0, last + self._min - now)
+        # min(): a clock that stepped back (an adjusted system clock) must not make the wait
+        # longer than one interval.
+        delay = 0.0 if last is None else min(self._min, max(0.0, last + self._min - now))
         if delay > 0:
             self._sleep(delay)
         self._last[host] = now + delay

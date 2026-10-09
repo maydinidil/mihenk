@@ -8,6 +8,7 @@ from mihenk.capture.fetch import (
     KEPT_HEADERS,
     MAX_PAGE_BYTES,
     FetchFailure,
+    _timeout_detail,
     fetch_page,
     make_client,
 )
@@ -62,7 +63,49 @@ def test_slow_page_fails_as_timeout(site: LocalSite) -> None:
     with make_client("en", timeout_s=0.5) as client, pytest.raises(FetchFailure) as caught:
         fetch_page(client, site.url("/slow"))
     assert caught.value.status is CaptureStatus.TIMEOUT
-    assert "timed out" in caught.value.detail
+    assert caught.value.detail == "timed out (ReadTimeout) reaching 127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx2.ConnectTimeout, httpx2.ReadTimeout, httpx2.WriteTimeout, httpx2.PoolTimeout],
+)
+def test_a_timeout_names_its_kind_and_the_site(error: type[httpx2.TimeoutException]) -> None:
+    def stall(request: httpx2.Request) -> httpx2.Response:
+        raise error("timed out", request=request)
+
+    transport = httpx2.MockTransport(stall)
+    with httpx2.Client(transport=transport) as client, pytest.raises(FetchFailure) as caught:
+        fetch_page(client, "http://shop.example:8443/pricing")
+    assert caught.value.status is CaptureStatus.TIMEOUT
+    assert caught.value.detail == f"timed out ({error.__name__}) reaching shop.example"
+
+
+def test_a_timeout_after_a_redirect_names_the_site_that_stalled() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "old.example":
+            return httpx2.Response(302, headers={"Location": "http://new.example/plans"})
+        raise httpx2.ReadTimeout("timed out", request=request)
+
+    transport = httpx2.MockTransport(handler)
+    with httpx2.Client(transport=transport) as client, pytest.raises(FetchFailure) as caught:
+        fetch_page(client, "http://old.example/plans")
+    assert caught.value.detail == "timed out (ReadTimeout) reaching new.example"
+
+
+def test_a_timeout_names_the_site_spelled_as_the_rest_of_the_capture_spells_it() -> None:
+    def stall(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ReadTimeout("timed out", request=request)
+
+    transport = httpx2.MockTransport(stall)
+    with httpx2.Client(transport=transport) as client, pytest.raises(FetchFailure) as caught:
+        fetch_page(client, "http://user:pw@Bücher.example./preise")
+    assert caught.value.detail == "timed out (ReadTimeout) reaching xn--bcher-kva.example"
+
+
+def test_a_timeout_that_carries_no_request_names_the_site_asked_for() -> None:
+    detail = _timeout_detail(httpx2.ReadTimeout("timed out"), "http://bücher.example/preise")
+    assert detail == "timed out (ReadTimeout) reaching xn--bcher-kva.example"
 
 
 def test_not_found_is_returned_not_raised(site: LocalSite) -> None:
@@ -185,12 +228,21 @@ def test_the_client_sends_a_named_user_agent_and_the_language(site: LocalSite) -
     assert request.headers["accept"] == "text/html,application/xhtml+xml"
 
 
-def test_the_client_limits_redirects_and_follows_them() -> None:
+def test_the_client_leaves_redirects_to_open() -> None:
+    # Every request goes through `_open`, which follows each hop itself (a redirect's body is
+    # never read), so the client must not follow any on its own.
     with make_client("en", timeout_s=7) as client:
         assert isinstance(client, httpx2.Client)
-        assert client.max_redirects == MAX_REDIRECTS
-        assert client.follow_redirects is True
+        assert client.follow_redirects is False
         assert client.timeout.read == 7
+
+
+def test_a_redirect_is_followed_by_fetch_page_and_not_by_the_client(site: LocalSite) -> None:
+    site.redirect("/old", "/new")
+    site.add("/new", "<p>€5</p>")
+    with make_client("en") as client:
+        assert client.get(site.url("/old")).status_code == 302
+        assert fetch_page(client, site.url("/old")).final_url == site.url("/new")
 
 
 def test_gzip_pages_are_decoded(site: LocalSite) -> None:

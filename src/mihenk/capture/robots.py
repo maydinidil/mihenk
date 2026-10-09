@@ -45,13 +45,27 @@ def robots_url(page_url: str) -> str:
     return urlunsplit((scheme, host_key(page_url), "/robots.txt", "", ""))
 
 
+def _within_limit(body: bytes) -> bytes:
+    """The body as it is read: whole when it fits `MAX_ROBOTS_BYTES`, else cut back to the last
+    line break inside the limit, so the last rule is never read half-written (`Disallow: /p`
+    cut from `Disallow: /private` would block `/public`). A bare CR ends a line too (RFC 9309).
+    `fetch_robots` hands over one byte more than the limit, so a longer body shows as longer.
+    """
+    if len(body) <= MAX_ROBOTS_BYTES:
+        return body
+    kept = body[:MAX_ROBOTS_BYTES]
+    return kept[: max(kept.rfind(b"\n"), kept.rfind(b"\r")) + 1]
+
+
 def decide(fetch: RobotsFetch, page_url: str) -> RobotsDecision:
     status = fetch.status
     if status is None:
         return RobotsDecision(False, f"robots.txt {fetch.detail}; treated as disallow-all")
     if 200 <= status < 300:
+        if fetch.body is None:
+            return RobotsDecision(False, "robots.txt body unreadable; treated as disallow-all")
         # utf-8-sig: a byte order mark would otherwise hide the first group's user-agent line.
-        text = (fetch.body or b"")[:MAX_ROBOTS_BYTES].decode("utf-8-sig", errors="replace")
+        text = _within_limit(fetch.body).decode("utf-8-sig", errors="replace")
         if Protego.parse(text).can_fetch(page_url, USER_AGENT_TOKEN):
             return RobotsDecision(True, "allowed by the robots.txt rules")
         return RobotsDecision(False, "disallowed by the robots.txt rules")
@@ -74,7 +88,10 @@ class RobotsGate:
         self._cache: dict[str, RobotsFetch] = {}
 
     def check(self, page_url: str) -> RobotsDecision:
-        url = robots_url(page_url)
+        try:
+            url = robots_url(page_url)
+        except ValueError:  # a port out of range (:99999), an unclosed IPv6 bracket
+            return RobotsDecision(False, "not a valid http(s) URL; treated as disallow-all")
         if url not in self._cache:
             self._cache[url] = self._fetch(url)
         return decide(self._cache[url], page_url)

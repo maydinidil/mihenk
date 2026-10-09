@@ -74,10 +74,35 @@ def test_robots_body_is_cut_at_the_limit_and_the_rules_before_it_apply(site: Loc
         fetched = fetch_robots(client, site.url("/robots.txt"))
     assert fetched.status == 200
     assert fetched.body is not None
-    assert len(fetched.body) == MAX_ROBOTS_BYTES
+    assert len(fetched.body) == MAX_ROBOTS_BYTES + 1  # one more than the limit shows it is longer
     assert fetched.body.startswith(RULES)
     assert not decide(fetched, site.url("/pricing")).allowed
     assert decide(fetched, site.url("/late")).allowed  # past the limit, so never read
+
+
+def test_a_rule_cut_by_the_limit_is_not_read_half_written(site: LocalSite) -> None:
+    head = b"User-agent: *\n"
+    padding = MAX_ROBOTS_BYTES - len(head) - 1 - len(b"Disallow: /p")
+    body = head + b"#" * padding + b"\nDisallow: /private\nAllow: /\n"
+    site.add("/robots.txt", body, content_type="text/plain")
+    with make_client("en") as client:
+        fetched = fetch_robots(client, site.url("/robots.txt"))
+    assert fetched.body is not None
+    assert fetched.body[:MAX_ROBOTS_BYTES].endswith(b"Disallow: /p")  # the limit falls in the rule
+    assert decide(fetched, site.url("/public")).allowed
+
+
+def test_a_body_exactly_at_the_limit_comes_back_whole_and_one_more_byte_is_kept(
+    site: LocalSite,
+) -> None:
+    body = b"User-agent: *\n" + b"#" * (MAX_ROBOTS_BYTES - len(b"User-agent: *\n"))
+    site.add("/exact/robots.txt", body, content_type="text/plain")
+    site.add("/over/robots.txt", body + b"#" * 5000, content_type="text/plain")
+    with make_client("en") as client:
+        exact = fetch_robots(client, site.url("/exact/robots.txt"))
+        over = fetch_robots(client, site.url("/over/robots.txt"))
+    assert exact.body == body
+    assert over.body == body + b"#"
 
 
 def test_reading_stops_at_the_limit_instead_of_loading_the_whole_body() -> None:
@@ -97,7 +122,7 @@ def test_reading_stops_at_the_limit_instead_of_loading_the_whole_body() -> None:
         fetched = fetch_robots(client, "http://robots.test/robots.txt")
     assert fetched.status == 200
     assert fetched.body is not None
-    assert len(fetched.body) == MAX_ROBOTS_BYTES
+    assert len(fetched.body) == MAX_ROBOTS_BYTES + 1
     assert served <= MAX_ROBOTS_BYTES // len(chunk) + 2
 
 
@@ -107,9 +132,40 @@ def test_robots_timeout_is_unreachable(site: LocalSite) -> None:
         fetched = fetch_robots(client, site.url("/robots.txt"))
     assert fetched.status is None
     assert fetched.body is None
-    assert fetched.detail.startswith("unreachable: ")
-    assert "Timeout" in fetched.detail
+    assert fetched.detail == "unreachable: timed out (ReadTimeout) reaching 127.0.0.1"
     assert not decide(fetched, site.url("/pricing")).allowed
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx2.ConnectTimeout, httpx2.ReadTimeout, httpx2.WriteTimeout, httpx2.PoolTimeout],
+)
+def test_a_robots_timeout_names_its_kind_and_the_site(
+    error: type[httpx2.TimeoutException],
+) -> None:
+    def stall(request: httpx2.Request) -> httpx2.Response:
+        raise error("timed out", request=request)
+
+    with httpx2.Client(transport=httpx2.MockTransport(stall)) as client:
+        fetched = fetch_robots(client, "http://shop.example:8443/robots.txt")
+    assert fetched == RobotsFetch(
+        None, None, f"unreachable: timed out ({error.__name__}) reaching shop.example"
+    )
+    decision = decide(fetched, "http://shop.example:8443/pricing")
+    assert not decision.allowed
+    assert decision.reason == (
+        f"robots.txt unreachable: timed out ({error.__name__}) reaching shop.example;"
+        " treated as disallow-all"
+    )
+
+
+def test_a_robots_timeout_that_carries_no_request_names_the_site_asked_for() -> None:
+    def stall(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectTimeout("timed out")
+
+    with httpx2.Client(transport=httpx2.MockTransport(stall)) as client:
+        fetched = fetch_robots(client, "http://shop.example/robots.txt")
+    assert fetched.detail == "unreachable: timed out (ConnectTimeout) reaching shop.example"
 
 
 def test_robots_refused_connection_is_unreachable() -> None:

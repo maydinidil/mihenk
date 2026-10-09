@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from mihenk.trim.structured import (
     MAX_BLOCK_BYTES,
+    MAX_JSON_DEPTH,
     StructuredKind,
     block_to_json,
     extract_structured,
@@ -186,3 +189,85 @@ def test_a_literal_lone_surrogate_in_the_script_text_does_not_raise() -> None:
     assert block.parsed is None
     assert block.problem == "invalid_json: unpaired surrogate"
     assert block.size_bytes == len(body.encode("utf-8", "surrogatepass"))
+
+
+def test_the_structured_trap_pages_are_found() -> None:
+    # An empty list would make the parametrized test above pass without running at all.
+    assert STRUCTURED_PAGES, "no trap page declares a `structured` expectation"
+    assert {"huge-blob", "jsonld-currency-mismatch", "next-data"} <= set(STRUCTURED_PAGES)
+
+
+def test_a_block_of_null_is_parsed_and_carries_no_raw_text() -> None:
+    (block,) = extract_structured(_script("null"))
+    assert block.parsed is None
+    assert block.problem is None
+    assert block.raw == "null"
+    shown = block_to_json(block)
+    assert shown["problem"] is None
+    assert shown["parsed"] is None
+    assert shown["raw"] is None
+
+
+def test_raw_text_is_kept_for_exactly_the_blocks_with_a_problem() -> None:
+    cases = {
+        "{oops": "invalid_json: Expecting property name enclosed in double quotes",
+        '{"price": NaN}': "invalid_json: non-finite number",
+        "[" * 600 + "]" * 600: "invalid_json: nesting too deep",
+    }
+    for body, problem in cases.items():
+        (block,) = extract_structured(_script(body))
+        assert block.problem == problem
+        assert block_to_json(block)["raw"] == body
+    (huge,) = extract_structured(_script('{"pad": "' + "x" * 3_000_000 + '"}'))
+    assert huge.problem == "too_large"
+    assert block_to_json(huge)["raw"] is None  # never kept: it is the very reason for the problem
+    for body in ('{"a": 1}', "[]", "0", "false", '""'):
+        (block,) = extract_structured(_script(body))
+        assert block.problem is None
+        assert block_to_json(block)["raw"] is None
+
+
+def arrays(levels: int) -> str:
+    return "[" * levels + "]" * levels
+
+
+def objects(levels: int) -> str:
+    return '{"a":' * levels + "1" + "}" * levels
+
+
+def test_the_depth_cap_is_512() -> None:
+    assert MAX_JSON_DEPTH == 512
+
+
+@pytest.mark.parametrize("make", [arrays, objects])
+def test_a_block_600_levels_deep_is_refused(make: Callable[[int], str]) -> None:
+    (block,) = extract_structured(_script(make(600)))
+    assert block.parsed is None
+    assert block.problem == "invalid_json: nesting too deep"
+    assert block.raw == make(600)
+
+
+@pytest.mark.parametrize("make", [arrays, objects])
+def test_a_block_500_levels_deep_is_accepted(make: Callable[[int], str]) -> None:
+    (block,) = extract_structured(_script(make(500)))
+    assert block.problem is None
+    assert block.parsed is not None
+
+
+@pytest.mark.parametrize("make", [arrays, objects])
+def test_the_cap_itself_is_accepted_and_one_level_more_is_not(make: Callable[[int], str]) -> None:
+    (at_cap,) = extract_structured(_script(make(MAX_JSON_DEPTH)))
+    assert at_cap.problem is None
+    (over,) = extract_structured(_script(make(MAX_JSON_DEPTH + 1)))
+    assert over.problem == "invalid_json: nesting too deep"
+
+
+def test_depth_counts_the_deepest_branch_not_the_widest_level() -> None:
+    wide = "[" + ",".join(["[]"] * 5000) + "]"  # 5,000 siblings, two levels
+    (block,) = extract_structured(_script(wide))
+    assert block.problem is None
+    mixed = '{"a": [' + arrays(MAX_JSON_DEPTH - 2) + ', {"b": 1}]}'  # the deepest branch is 512
+    (block,) = extract_structured(_script(mixed))
+    assert block.problem is None
+    (block,) = extract_structured(_script(mixed.replace('{"b": 1}', objects(MAX_JSON_DEPTH))))
+    assert block.problem == "invalid_json: nesting too deep"

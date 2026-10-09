@@ -13,7 +13,6 @@ Every call that reads the page carries a timeout, so a page that spins forever i
 from __future__ import annotations
 
 import contextlib
-import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -24,7 +23,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from mihenk.capture.models import CaptureStatus
 from mihenk.capture.recipe import Action, ClickSelector, ClickText, Recipe, SelectOption, State
-from mihenk.trim.text import canonical_text
+from mihenk.trim.text import canonical_text, scrub_surrogates
 
 
 @dataclass(frozen=True)
@@ -72,14 +71,6 @@ _HTML_JS = """(root) => {
   const doctype = doc.doctype ? new XMLSerializer().serializeToString(doc.doctype) : "";
   return doctype + root.outerHTML;
 }"""
-
-# A rendered DOM can hold half of a surrogate pair. Writing it into a snapshot would raise
-# `UnicodeEncodeError`, so it becomes U+FFFD, which is what a UTF-8 decoder would show.
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
-
-
-def _replace_lone_surrogates(text: str) -> str:
-    return _LONE_SURROGATE.sub("\ufffd", text)
 
 
 def _dismiss(dialog: Dialog) -> None:
@@ -174,8 +165,8 @@ def _capture_state(page: Page, url: str, state: State, settings: RenderSettings)
         final_url=page.url,
         status=response.status if response is not None else None,
         headers=dict(response.headers) if response is not None else {},
-        html=_replace_lone_surrogates(html),
-        visible_text=canonical_text(_replace_lone_surrogates(page.inner_text("body"))),
+        html=scrub_surrogates(html),
+        visible_text=canonical_text(scrub_surrogates(page.inner_text("body"))),
         screenshot_png=page.screenshot(full_page=True),
     )
 

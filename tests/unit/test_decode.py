@@ -1,4 +1,8 @@
-from mihenk.capture.fetch import decode_html
+import codecs
+
+import pytest
+
+from mihenk.capture.fetch import _ALLOWED_CODECS, decode_html
 from tests.helpers.pages import PAGES_DIR, load_expectations
 
 TURKISH = "<meta charset='windows-1254'><p>Aylık 199 TL, Fiyatlara KDV dahildir. İstanbul şube</p>"
@@ -120,3 +124,233 @@ def test_the_windows_1254_trap_page_still_decodes() -> None:
     assert encoding == "cp1254"
     for expected in load_expectations("windows-1254")["fetch_text_contains"]:
         assert expected in text
+
+
+# UTF-16: a byte order mark is read like the UTF-8 one (WHATWG Encoding Standard).
+
+EURO_PLAN = "€29 Pro-Plan, Aylık İstanbul"
+
+
+def test_utf16_little_endian_bom() -> None:
+    body = codecs.BOM_UTF16_LE + EURO_PLAN.encode("utf-16-le")
+    assert decode_html(body, None) == (EURO_PLAN, "utf-16-le")
+
+
+def test_utf16_big_endian_bom() -> None:
+    body = codecs.BOM_UTF16_BE + EURO_PLAN.encode("utf-16-be")
+    assert decode_html(body, None) == (EURO_PLAN, "utf-16-be")
+
+
+def test_a_utf16_bom_beats_the_http_header_and_the_meta_tag() -> None:
+    body = codecs.BOM_UTF16_LE + "<meta charset='windows-1254'>€9".encode("utf-16-le")
+    assert decode_html(body, "text/html; charset=utf-8") == (
+        "<meta charset='windows-1254'>€9",
+        "utf-16-le",
+    )
+
+
+def test_a_utf16_bom_with_a_truncated_last_unit_is_replaced_not_raised() -> None:
+    body = codecs.BOM_UTF16_LE + "€9".encode("utf-16-le") + b"A"
+    assert decode_html(body, None) == ("€9\N{REPLACEMENT CHARACTER}", "utf-16-le")
+
+
+def test_the_utf8_bom_still_wins_first() -> None:
+    assert decode_html(codecs.BOM_UTF8 + "€9".encode(), "text/html; charset=utf-16") == (
+        "€9",
+        "utf-8-sig",
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "encoding"),
+    [("utf-16", "utf-16-le"), ("UTF-16LE", "utf-16-le"), ("utf-16be", "utf-16-be")],
+)
+def test_a_utf16_label_in_the_http_header_is_honoured(label: str, encoding: str) -> None:
+    body = EURO_PLAN.encode(encoding)  # no BOM
+    assert decode_html(body, f"text/html; charset={label}") == (EURO_PLAN, encoding)
+
+
+@pytest.mark.parametrize("label", ["utf-16", "utf-16le", "utf-16be", "UTF-16"])
+def test_a_utf16_label_in_a_meta_tag_is_read_as_utf8(label: str) -> None:
+    # The tag was found by reading the bytes as ASCII, so the page cannot be UTF-16.
+    page = f"<meta charset={label}><p>{EURO_PLAN}</p>".encode()
+    text, encoding = decode_html(page, "text/html")
+    assert encoding == "utf-8"
+    assert text.endswith(f"<p>{EURO_PLAN}</p>")
+    page = f"<meta http-equiv='Content-Type' content='text/html; charset={label}'>{EURO_PLAN}"
+    assert decode_html(page.encode(), None)[1] == "utf-8"
+
+
+# A charset in single quotes in the header.
+
+
+def test_single_quoted_header_charset() -> None:
+    text, encoding = decode_html("İstanbul".encode("cp1254"), "text/html; charset='windows-1254'")
+    assert (text, encoding) == ("İstanbul", "cp1254")
+
+
+# Only the encodings of the WHATWG table are used.
+
+ALLOWED_LABELS = [
+    ("windows-1250", "Zażółć gęślą jaźń", "cp1250"),
+    ("windows-1251", "Привет, мир €", "cp1251"),
+    ("windows-1252", "Plan “Pro” €29", "cp1252"),
+    ("windows-1253", "Καλημέρα κόσμε", "cp1253"),
+    ("windows-1254", "Aylık İstanbul şube", "cp1254"),
+    ("windows-1255", "שלום עולם", "cp1255"),
+    ("windows-1256", "مرحبا بالعالم", "cp1256"),
+    ("windows-1257", "Žemė ir dangus", "cp1257"),
+    ("windows-1258", "Xin chào", "cp1258"),
+    ("iso-8859-2", "Zażółć gęślą", "iso8859-2"),
+    ("iso-8859-3", "Ħaġar", "iso8859-3"),
+    ("iso-8859-4", "Ķemeri", "iso8859-4"),
+    ("iso-8859-5", "Привет", "iso8859-5"),
+    ("iso-8859-6", "مرحبا", "iso8859-6"),
+    ("iso-8859-7", "Καλημέρα", "iso8859-7"),
+    ("iso-8859-8", "שלום", "iso8859-8"),
+    ("iso-8859-10", "Ísland Þór", "iso8859-10"),
+    ("iso-8859-13", "Žemė", "iso8859-13"),
+    ("iso-8859-14", "Ŵŷ", "iso8859-14"),
+    ("iso-8859-15", "€ Œuvre", "iso8859-15"),
+    ("iso-8859-16", "Brașov", "iso8859-16"),
+    ("koi8-r", "Привет", "koi8-r"),
+    ("koi8-u", "Привіт", "koi8-u"),
+    ("ibm866", "Привет", "cp866"),
+    ("cp874", "สวัสดี", "cp874"),
+    ("macintosh", "café", "mac-roman"),
+    ("mac-cyrillic", "Привет", "mac-cyrillic"),
+    ("gbk", "你好世界", "gbk"),
+    ("gb18030", "你好世界", "gb18030"),
+    ("big5", "你好世界", "big5"),
+    ("big5-hkscs", "你好世界", "big5hkscs"),
+    ("euc-jp", "こんにちは", "euc_jp"),
+    ("iso-2022-jp", "こんにちは", "iso2022_jp"),
+    ("shift_jis", "こんにちは", "shift_jis"),
+    ("cp932", "こんにちは", "cp932"),
+    ("euc-kr", "안녕하세요", "euc_kr"),
+    ("cp949", "안녕하세요", "cp949"),
+    # Labels that browsers read as a wider encoding than Python's codec of that name.
+    ("gb2312", "你好世界", "gbk"),
+    ("tis-620", "สวัสดี", "cp874"),
+    ("iso-8859-11", "สวัสดี", "cp874"),
+]
+
+
+@pytest.mark.parametrize(("label", "sample", "encoding"), ALLOWED_LABELS)
+def test_an_encoding_of_the_whatwg_table_is_used(label: str, sample: str, encoding: str) -> None:
+    body = sample.encode(encoding)
+    assert decode_html(body, f"text/html; charset={label}") == (sample, encoding)
+    tag = f"<meta charset='{label}'>"
+    text, used = decode_html(tag.encode("ascii") + body, None)
+    assert (text.removeprefix(tag), used) == (sample, encoding)
+
+
+REFUSED = [
+    "utf-7",  # a text encoding, but one no browser reads
+    "utf-32",
+    "utf-32-le",
+    "utf-8-sig",
+    "unicode_escape",
+    "raw_unicode_escape",
+    "punycode",
+    "idna",
+    "mbcs",
+    "oem",
+    "rot13",
+    "hex",
+    "base64",
+    "zlib",
+    "bz2",
+    "uu",
+    "quopri",
+    "undefined",
+    "cp437",  # legacy code pages that are not in the table
+    "cp850",
+    "cp037",
+    "hz",
+    "no-such-thing",
+]
+
+
+@pytest.mark.parametrize("name", REFUSED)
+def test_an_encoding_outside_the_whatwg_table_is_ignored(name: str) -> None:
+    # Ignored means: as if the page had declared nothing, so the next candidate is tried.
+    assert decode_html("€9".encode(), f"text/html; charset={name}") == ("€9", "utf-8")
+    page = f"<meta charset='{name}'><p>€9</p>".encode()
+    assert decode_html(page, "text/html") == (page.decode("utf-8"), "utf-8")
+    # A refused header charset does not stop a valid <meta> after it from being read.
+    turkish = "<meta charset='windows-1254'>İstanbul".encode("cp1254")
+    assert decode_html(turkish, f"text/html; charset={name}")[1] == "cp1254"
+
+
+def test_a_refused_encoding_does_not_change_plain_text() -> None:
+    # utf-7 would turn "+AOk-" into "é"; the page is really UTF-8, so it stays as written.
+    text, encoding = decode_html(b"<p>caf\xc3\xa9 +AOk-</p>", "text/html; charset=utf-7")
+    assert (text, encoding) == ("<p>café +AOk-</p>", "utf-8")
+
+
+def test_every_allowed_encoding_decodes_any_bytes_without_raising() -> None:
+    noise = bytes(range(256)) * 4 + b"\xff\xfe\x00\xd8"
+    for name in sorted(_ALLOWED_CODECS):
+        text, encoding = decode_html(noise, f"text/html; charset={name}")
+        assert encoding == name
+        assert isinstance(text, str)
+
+
+# The <meta> prescan: the first 1024 bytes, without comments.
+
+
+def test_a_meta_tag_inside_the_first_1024_bytes_is_read() -> None:
+    padding = b"<!-- " + b"x" * 900 + b" -->"
+    page = padding + b"<meta charset='windows-1254'>" + "İstanbul".encode("cp1254")
+    assert len(page) < 1024
+    assert decode_html(page, None)[1] == "cp1254"
+
+
+def test_a_meta_tag_after_the_first_1024_bytes_is_not_read() -> None:
+    padding = b"<p>" + b"x" * 1100 + b"</p>"
+    page = padding + b"<meta charset='windows-1254'>" + "İstanbul".encode("cp1254")
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_a_meta_tag_cut_by_the_1024_byte_window_is_not_read() -> None:
+    # The window ends after `big5`, which is itself a charset: the cut must not pass for one.
+    tag = b"<meta charset='big5-hkscs'>"
+    page = b"<p>" + b"x" * (1024 - len(b"<p>") - len(b"<meta charset='big5")) + tag
+    assert page[:1024].endswith(b"charset='big5")
+    assert decode_html(page, None)[1] == "utf-8"
+    # The same tag, whole inside the window, is read.
+    page = b"<p>" + b"x" * (1024 - len(b"<p>") - len(tag)) + tag + b"<p>x</p>"
+    assert decode_html(page, None)[1] == "big5hkscs"
+
+
+def test_a_short_page_whose_meta_value_ends_the_body_is_still_read() -> None:
+    assert decode_html(b"<meta charset=windows-1254", None)[1] == "cp1254"
+
+
+def test_a_meta_tag_in_a_comment_is_not_read() -> None:
+    page = b"<!-- <meta charset='windows-1254'> --><meta charset='utf-8'><p>\xe2\x82\xac9</p>"
+    assert decode_html(page, None) == (page.decode("utf-8"), "utf-8")
+
+
+def test_a_meta_tag_after_a_comment_is_read() -> None:
+    page = b"<!-- <meta charset='utf-8'> --><meta charset='windows-1254'>"
+    assert decode_html(page + "İstanbul".encode("cp1254"), None)[1] == "cp1254"
+
+
+def test_a_comment_that_is_never_closed_hides_the_rest_of_the_window() -> None:
+    page = b"<!-- <meta charset='windows-1254'>" + "İstanbul".encode("cp1254")
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_several_comments_each_end_at_their_own_close() -> None:
+    page = (
+        b"<!-- a --><!-- <meta charset='utf-8'> -->"
+        b"<meta charset='windows-1254'><!-- b -->" + "İstanbul".encode("cp1254")
+    )
+    assert decode_html(page, None)[1] == "cp1254"
+
+
+def test_the_header_charset_is_not_limited_by_the_prescan_window() -> None:
+    page = b"<p>" + b"x" * 2000 + "</p>İstanbul".encode("cp1254")
+    assert decode_html(page, "text/html; charset=windows-1254")[1] == "cp1254"

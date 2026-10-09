@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from bs4 import BeautifulSoup, Tag
 
 MAX_BLOCK_BYTES = 2_000_000
+# How many arrays and objects may sit inside one another. `json.loads` accepts about 3,000, but
+# `write_snapshot` dumps the block with `indent=2`, which takes one stack frame per level and
+# raises `RecursionError` long before that. Real pricing data is a handful of levels deep.
+MAX_JSON_DEPTH = 512
 _WRAPPERS = (("<!--", "-->"), ("//<![CDATA[", "//]]>"), ("<![CDATA[", "]]>"))
 
 
@@ -52,6 +57,25 @@ def _strip_wrappers(raw: str) -> str:
     return text
 
 
+def _too_deep(value: object) -> bool:
+    """Whether arrays and objects nest more than `MAX_JSON_DEPTH` levels. No recursion: the
+    check exists because the depth is not safe to recurse into."""
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        children: Iterable[object]
+        if isinstance(item, dict):
+            children = item.values()
+        elif isinstance(item, list):
+            children = item
+        else:
+            continue
+        if depth + 1 > MAX_JSON_DEPTH:
+            return True
+        stack.extend((child, depth + 1) for child in children)
+    return False
+
+
 def _parse(text: str) -> tuple[object | None, str | None]:
     """Parse one block: `(parsed, None)`, or `(None, problem)` with the cause in plain words.
 
@@ -68,6 +92,8 @@ def _parse(text: str) -> tuple[object | None, str | None]:
     except ValueError:
         # The only other thing json.loads raises is the limit on an integer's digits.
         return None, "invalid_json: number too long"
+    if _too_deep(parsed):
+        return None, "invalid_json: nesting too deep"
     try:
         json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except RecursionError:
@@ -109,5 +135,6 @@ def block_to_json(block: StructuredBlock) -> dict[str, object]:
         "size_bytes": block.size_bytes,
         "problem": block.problem,
         "parsed": block.parsed,
-        "raw": block.raw if block.parsed is None else None,
+        # Raw text is kept for what could not be used. A block of `null` parsed fine.
+        "raw": block.raw if block.problem is not None else None,
     }

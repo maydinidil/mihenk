@@ -150,11 +150,19 @@ def test_bad_states_are_refused_with_exit_2(
     assert len(err.strip().splitlines()) == 1
 
 
+def _set_proxy_variables(monkeypatch: pytest.MonkeyPatch, proxy: str) -> None:
+    """The user's proxy setting, as the app reads it. The suite's autouse fixture sets
+    `NO_PROXY=*` so that tests go direct; a test of the app's proxy handling takes that back."""
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(name, proxy)
+
+
 def test_a_malformed_proxy_variable_is_one_line_and_exit_2(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-        monkeypatch.setenv(name, "ftp://127.0.0.1:9")
+    _set_proxy_variables(monkeypatch, "ftp://127.0.0.1:9")
     code, err = _refused(["capture", "http://127.0.0.1/x"], capsys, tmp_path)
     assert code == 2
     assert err.startswith("mihenk capture: error: cannot set up the http client: ")
@@ -164,8 +172,7 @@ def test_a_malformed_proxy_variable_is_one_line_and_exit_2(
 def test_a_proxy_that_needs_a_missing_package_is_one_line_and_exit_2(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-        monkeypatch.setenv(name, "socks5://127.0.0.1:9")
+    _set_proxy_variables(monkeypatch, "socks5://127.0.0.1:9")
     code, err = _refused(["capture", "http://127.0.0.1/x"], capsys, tmp_path)
     assert code == 2
     assert "cannot set up the http client" in err

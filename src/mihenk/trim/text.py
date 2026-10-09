@@ -26,13 +26,16 @@ _Frame = tuple[Iterator[PageElement], bool, bool]
 
 _HSPACE = re.compile(r"[ \t\f\v\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+")
 _INVISIBLE = re.compile(r"[\u200b\ufeff]")
+# A rendered DOM can hold half of a surrogate pair. Writing it into a snapshot would raise
+# `UnicodeEncodeError`, so it becomes U+FFFD, which is what a UTF-8 decoder would show.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# <br> is not here: `html_to_text` turns it into a line break by name, before this set is asked.
 _BLOCK = frozenset(
     {
         "address",
         "article",
         "aside",
         "blockquote",
-        "br",
         "caption",
         "dd",
         "details",
@@ -53,10 +56,13 @@ _BLOCK = frozenset(
         "h6",
         "header",
         "hr",
+        "legend",
         "li",
         "main",
         "nav",
         "ol",
+        "optgroup",
+        "option",
         "p",
         "pre",
         "section",
@@ -77,9 +83,20 @@ _SKIP = frozenset({"script", "style", "noscript", "template", "title", "iframe",
 _NOT_TEXT = (Comment, CData, Declaration, Doctype, ProcessingInstruction)
 
 
+def scrub_surrogates(text: str) -> str:
+    """The text with every lone surrogate (U+D800 to U+DFFF) replaced by U+FFFD.
+
+    UTF-8 cannot encode a surrogate, so one left in page text or HTML would make writing a
+    snapshot raise `UnicodeEncodeError` and lose the capture.
+    """
+    return _LONE_SURROGATE.sub("\N{REPLACEMENT CHARACTER}", text)
+
+
 def canonical_text(raw: str) -> str:
-    text = unicodedata.normalize("NFC", raw).replace("\r\n", "\n").replace("\r", "\n")
-    text = _INVISIBLE.sub("", text)
+    # The invisible characters go first: one between a letter and its accent would otherwise
+    # stop NFC from composing them, and a second call would compose them (not idempotent).
+    text = unicodedata.normalize("NFC", _INVISIBLE.sub("", raw))
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = [_HSPACE.sub(" ", line).strip() for line in text.split("\n")]
     joined = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     return joined + "\n" if joined else ""

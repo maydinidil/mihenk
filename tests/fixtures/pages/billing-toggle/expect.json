@@ -15,7 +15,7 @@
       "label": "monthly",
       "actions": [{"kind": "click_text", "text": "Monthly"}],
       "text_contains": ["€29 / month, billed monthly"],
-      "text_lacks": []
+      "text_lacks": ["billed yearly"]
     }
   ],
   "locale": {

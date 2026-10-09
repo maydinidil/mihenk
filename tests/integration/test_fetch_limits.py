@@ -1,7 +1,8 @@
-"""The time and size bounds of the two fetches: a deadline for the whole request, and redirect
-bodies that are never read. Mock transports answer the cases that need a body counted; the
-trickle test uses a real socket on 127.0.0.1."""
+"""The time and size bounds of the two fetches: a deadline for the whole request, redirect
+bodies that are never read, and the size cap on a page body. Mock transports answer the cases
+that need a body counted; the trickle test uses a real socket on 127.0.0.1."""
 
+import gzip
 import inspect
 import threading
 import time
@@ -12,6 +13,7 @@ import httpx2
 import pytest
 
 from mihenk.capture.fetch import (
+    MAX_PAGE_BYTES,
     PAGE_DEADLINE_S,
     ROBOTS_DEADLINE_S,
     FetchFailure,
@@ -296,3 +298,48 @@ def test_a_redirect_without_a_location_is_the_final_response() -> None:
     assert page.status == 304
     assert page.final_url == f"{BASE}/same"
     assert fetched.status == 304
+
+
+# The size cap on a page body: an endless stream and a gzip bomb both end at the cap.
+
+
+def test_an_endless_body_ends_in_too_large_at_the_cap() -> None:
+    body = Body(limit=2_000)  # 125 MiB, if anyone read it all
+    with (
+        _client(
+            _handler_for(lambda: httpx2.Response(200, headers=HTML, content=body.chunks()))
+        ) as client,
+        pytest.raises(FetchFailure) as caught,
+    ):
+        fetch_page(client, f"{BASE}/old")
+    assert caught.value.status is CaptureStatus.TOO_LARGE
+    assert str(MAX_PAGE_BYTES) in caught.value.detail
+    # The chunk that crosses the cap is the last one pulled.
+    assert body.served == MAX_PAGE_BYTES // len(CHUNK) + 1
+
+
+def test_a_gzip_bomb_ends_in_too_large_without_being_inflated() -> None:
+    inflated = 200 * 1024 * 1024
+    bomb = gzip.compress(b"\0" * inflated, compresslevel=9)
+    assert len(bomb) < 300_000  # a small body that claims a very large page
+    piece = 512
+    pulled = 0
+
+    def pieces() -> Iterator[bytes]:
+        nonlocal pulled
+        for start in range(0, len(bomb), piece):
+            pulled += len(bomb[start : start + piece])
+            yield bomb[start : start + piece]
+
+    headers = {**HTML, "Content-Encoding": "gzip"}
+    with (
+        _client(
+            _handler_for(lambda: httpx2.Response(200, headers=headers, content=pieces()))
+        ) as client,
+        pytest.raises(FetchFailure) as caught,
+    ):
+        fetch_page(client, f"{BASE}/old")
+    assert caught.value.status is CaptureStatus.TOO_LARGE
+    # The cap is 7.5 % of the inflated size, so about that share of the compressed bytes was
+    # pulled. A reader that inflated everything first would have pulled all of them.
+    assert pulled < len(bomb) * 0.2

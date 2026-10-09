@@ -6,6 +6,7 @@ really contains its trap) and the helper that serves them. Capturing them is Tas
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import socket
@@ -67,8 +68,17 @@ EXPECT_KEYS = {
 STATE_KEYS = {"label", "actions", "text_contains", "text_lacks"}
 LOCALE_KEYS = {"html_lang", "content_language", "currency_symbols", "currency_codes", "vat_phrases"}
 
-URL = re.compile(rb"https?://[^\s\"'<>()\\]*", re.IGNORECASE)
-PROTOCOL_RELATIVE = re.compile(rb"""(?:src|href|action|poster|srcset)\s*=\s*["']?\s*//""", re.I)
+URL = re.compile(rb"(?:https?|wss?)://[^\s\"'<>()\\]*", re.IGNORECASE)
+# A reference that takes the scheme of the page and so names another host: in an attribute, in
+# CSS (`url(//host)`, `@import "//host"`, and `@import url(//host)`, which is the first again), and
+# in a meta refresh (`content="0; url=//host"`).
+PROTOCOL_RELATIVE = re.compile(
+    rb"""(?:(?:src|href|action|poster|srcset)\s*=\s*["']?\s*//)"""
+    rb"""|(?:\burl\s*\(\s*["']?\s*//)"""
+    rb"""|(?:@import\s*["']\s*//)"""
+    rb"""|(?:\burl\s*=\s*["']?\s*//)""",
+    re.IGNORECASE,
+)
 
 
 def _page_bytes(name: str) -> bytes:
@@ -98,6 +108,10 @@ def test_every_page_folder_has_both_files(name: str) -> None:
     assert (PAGES_DIR / name / "expect.json").is_file()
 
 
+# Every page captures as `ok` except the ones named here.
+NOT_OK = {"bot-wall": "needs_human"}
+
+
 @pytest.mark.parametrize("name", page_names())
 def test_expectations_have_methods_and_status(name: str) -> None:
     expect = load_expectations(name)
@@ -105,6 +119,32 @@ def test_expectations_have_methods_and_status(name: str) -> None:
     assert expect["methods"], "a page is captured by at least one method"
     assert set(expect["methods"]) <= METHODS
     assert expect["status"] in STATUSES
+    # Not only a valid status but the right one: a page that quietly expected `http_error` would
+    # let the capture tests pass over a failure.
+    assert expect["status"] == NOT_OK.get(name, "ok")
+
+
+def test_the_pages_that_are_not_ok_are_real_pages() -> None:
+    assert set(NOT_OK) <= set(page_names())
+
+
+# These pages cannot be checked against their source: split-digits writes a price across spans, so
+# its text is only there once the page is read as text, and js-only-prices builds its prices in
+# script.
+NOT_IN_SOURCE = {"js-only-prices", "split-digits"}
+
+
+@pytest.mark.parametrize("name", [n for n in page_names() if n not in NOT_IN_SOURCE])
+def test_the_text_a_fetch_must_find_is_in_the_page_source(name: str) -> None:
+    source = html.unescape(_page_text(name))
+    for wanted in load_expectations(name).get("fetch_text_contains", []):
+        assert wanted in source, f"{name}: {wanted!r} is not in the page source"
+
+
+def test_the_pages_checked_against_their_source_are_not_none() -> None:
+    checked = [n for n in page_names() if n not in NOT_IN_SOURCE]
+    assert len(checked) >= 15
+    assert set(page_names()) >= NOT_IN_SOURCE
 
 
 def _string_list(value: Any) -> bool:
@@ -136,13 +176,68 @@ def test_expectations_follow_the_documented_shape(name: str) -> None:
         assert phrase["kind"] in {"incl", "excl"}
 
 
+def _other_host_references(data: bytes) -> list[str]:
+    """Every address in the page that is not one of the namespace names a browser never fetches:
+    absolute http, https, ws and wss URLs, and the references that borrow the page's scheme."""
+    urls = [match.group(0).decode("latin-1") for match in URL.finditer(data)]
+    found = [url for url in urls if not _allowed_url(url)]
+    found += [match.group(0).decode("latin-1") for match in PROTOCOL_RELATIVE.finditer(data)]
+    return found
+
+
 @pytest.mark.parametrize("name", page_names())
 def test_no_page_references_another_host(name: str) -> None:
-    data = _page_bytes(name)
-    urls = [match.group(0).decode("latin-1") for match in URL.finditer(data)]
-    foreign = [url for url in urls if not _allowed_url(url)]
+    foreign = _other_host_references(_page_bytes(name))
     assert not foreign, f"{name} references {foreign[:3]}"
-    assert not PROTOCOL_RELATIVE.search(data), f"{name} has a protocol-relative URL"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        '<a href="https://cdn.example/x">x</a>',
+        '<img src="http://cdn.example/x.png">',
+        '<a href="//cdn.example/x">x</a>',
+        "<img src=//cdn.example/x.png>",
+        "<img srcset='//cdn.example/x.png 2x'>",
+        '<form action = "//cdn.example/post">',
+        '<video poster="//cdn.example/p.jpg"></video>',
+        '<div style="background: url(//cdn.example/x.png)"></div>',
+        "<div style=\"background: url( '//cdn.example/x.png' )\"></div>",
+        '<style>div { background: URL("//cdn.example/x.png") }</style>',
+        '<style>@import "//cdn.example/a.css";</style>',
+        "<style>@import '//cdn.example/a.css';</style>",
+        "<style>@import url(//cdn.example/a.css);</style>",
+        "<style>@import url('//cdn.example/a.css');</style>",
+        '<script>new WebSocket("ws://cdn.example/socket")</script>',
+        '<script>new WebSocket("wss://cdn.example/socket")</script>',
+        '<script>var s = "WSS://cdn.example/socket";</script>',
+        '<meta http-equiv="refresh" content="0; url=//cdn.example/">',
+        '<meta http-equiv="refresh" content="0;URL=//cdn.example/">',
+        "<meta http-equiv='refresh' content='5; url = //cdn.example/'>",
+        '<meta http-equiv="refresh" content="0; url=https://cdn.example/">',
+    ],
+)
+def test_the_other_host_guard_catches_every_form(sample: str) -> None:
+    assert _other_host_references(sample.encode()), sample
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"></svg>',
+        '<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Offer"}</script>',
+        '<script type="application/ld+json">{"@type": "https://schema.org/Offer"}</script>',
+        '<a href="/pricing">Pricing</a><img src="logo.png"><a href="/a//b">x</a>',
+        '<div style="background: url(/img/x.png)"></div>',
+        '<div style="background: url(data:image/png;base64,iVBORw0KGgo=)"></div>',
+        "<style>@import 'local.css'; @import url(local.css); a { color: red } /* // note */</style>",
+        '<script>// a comment\nvar x = "a//b"; fetch("/poll");</script>',
+        '<meta http-equiv="refresh" content="0; url=/other">',
+        "<p>Two slashes // in text, and a url = in prose.</p>",
+    ],
+)
+def test_the_other_host_guard_lets_local_references_through(sample: str) -> None:
+    assert _other_host_references(sample.encode()) == []
 
 
 # The traps themselves: a page that quietly lost its trap would let the capture tests pass

@@ -71,3 +71,24 @@ def test_unicode_and_punycode_hosts_share_a_key() -> None:
 
 def test_ipv6_host_keeps_its_brackets_with_a_port() -> None:
     assert host_key("http://[::1]:8080/p") == "[::1]:8080"
+
+
+def test_a_clock_that_steps_back_never_makes_the_wait_longer_than_one_interval() -> None:
+    fake = FakeClock()
+    pace = Pace(2.0, fake.clock, fake.sleep)
+    pace.wait("a.example")
+    fake.now -= 10.0  # the clock steps back ten seconds
+    assert pace.wait("a.example") == 2.0
+    assert fake.slept == [2.0]
+    # The slot restarts from the new time, so the next request waits one interval again, not more.
+    assert pace.wait("a.example") == 2.0
+    assert fake.slept == [2.0, 2.0]
+
+
+def test_a_wait_that_is_already_over_stays_zero_after_the_clock_steps_forward() -> None:
+    fake = FakeClock()
+    pace = Pace(2.0, fake.clock, fake.sleep)
+    pace.wait("a.example")
+    fake.now += 3600.0
+    assert pace.wait("a.example") == 0.0
+    assert fake.slept == []

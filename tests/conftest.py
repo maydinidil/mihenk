@@ -130,6 +130,24 @@ def _loopback_only(request: pytest.FixtureRequest) -> Iterator[None]:
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every request a test makes, in this process or in a child it starts, goes direct.
+
+    httpx2 reads proxy settings from the environment and, on Windows, from the registry, so a
+    proxy on the machine would route the tests' 127.0.0.1 traffic through it. The proxy variables
+    go, and `NO_PROXY=*` stays: it exempts every host, and on Windows a non-empty set of `*_proxy`
+    variables also stops Python from falling back to the registry. Child processes inherit
+    `os.environ`, so they go direct too. The app's own `make_client` still reads proxies (a user
+    behind a company proxy needs it); tests of that set the variables themselves.
+    """
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setenv("no_proxy", "*")
+
+
 @pytest.fixture
 def expect_blocked_network(request: pytest.FixtureRequest) -> None:
     """Declare that this test blocks network attempts on purpose (the guard's own tests)."""

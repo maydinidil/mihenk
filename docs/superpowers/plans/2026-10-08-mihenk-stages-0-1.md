@@ -837,7 +837,7 @@ from mihenk.api.server import create_app
 
 
 def main() -> None:
-    app = create_app(GuardConfig(port=1, token="unused"), web_dist=None)
+    app = create_app(GuardConfig(port=1, token="x" * 32), web_dist=None)
     out = Path(__file__).resolve().parent.parent / "web" / "openapi.json"
     out.write_text(json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1151,7 +1151,14 @@ def bundled_web_dist() -> Path:
 
 class ServerThread:
     def __init__(self, app: FastAPI, sock: socket.socket) -> None:
-        self._server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))
+        # proxy_headers=False: uvicorn otherwise trusts X-Forwarded-* from 127.0.0.1, and every
+        # caller of this server is on 127.0.0.1, so any local program could set them.
+        # log_config=None: uvicorn's default config needs a console (the windowed build has
+        # none) and stops its loggers propagating, so server errors would miss mihenk.log.
+        config = uvicorn.Config(
+            app, log_level="warning", access_log=False, proxy_headers=False, log_config=None
+        )
+        self._server = uvicorn.Server(config)
         self._sock = sock
         self._thread = threading.Thread(target=self._run, name="mihenk-server", daemon=True)
 
@@ -1464,6 +1471,8 @@ def browser(pw: Any) -> Iterator[Any]:
 Create an empty `tests/__init__.py` in this step, so `tests.helpers` imports from the conftest.
 
 The guard covers Python sockets only. Chrome is a separate process; browser tests reach only `LocalSite`, by design.
+
+Amended during execution (Task 0.6 review): Windows' default asyncio loop connects through `asyncio.windows_events.IocpProactor.connect` (ConnectEx), which never calls `socket.connect`. On Windows the fixture also patches that method with the same `_check`, and `test_network_guard.py` adds `test_asyncio_connections_are_blocked` (an `asyncio.open_connection` to the documentation address 192.0.2.1, run on its own thread because the session's Playwright keeps a loop running on the main one).
 
 Add a test that the guard works, `tests/unit/test_network_guard.py`:
 
@@ -2014,7 +2023,21 @@ a = Analysis(  # noqa: F821
     pathex=[os.path.join(ROOT, "src")],
     datas=datas,
     # pywebview would otherwise pull in every GUI backend it finds; Qt is GPL (§18).
-    excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy", "gi", "tkinter"],
+    # pydantic.mypy drags in the dev-only type checker and cffi's build shim drags in
+    # setuptools; neither runs in the app, and neither is in the notices.
+    excludes=[
+        "PyQt5",
+        "PyQt6",
+        "PySide2",
+        "PySide6",
+        "qtpy",
+        "gi",
+        "tkinter",
+        "mypy",
+        "mypy_extensions",
+        "pydantic.mypy",
+        "setuptools",
+    ],
 )
 pyz = PYZ(a.pure)  # noqa: F821
 exe = EXE(  # noqa: F821

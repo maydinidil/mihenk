@@ -10,9 +10,8 @@ app: it tests every price against its source.
 
 ## Why the first choice was dropped
 
-The first choice was **karat25**. It was dropped after an EU trademark register search found the
-word mark KARAT registered for software, in classes 9 and 42. Using a name that close in the same
-field risks a conflict, so Aydin chose another name.
+The first choice was **karat25**. An EU trademark register search found the word mark KARAT
+registered for software, in classes 9 and 42, and Aydin chose another name.
 
 ## What was and was not checked
 
@@ -26,6 +25,5 @@ field risks a conflict, so Aydin chose another name.
 
 The planned address is `https://github.com/maydinidil/mihenk`.
 
-On 2026-10-09 the repository had not yet been created on GitHub. The work started in a local
-repository on that date, and Aydin creates the GitHub repository later. Nothing has been pushed
-and no remote is set until then.
+On 2026-10-09 the repository had not yet been created on GitHub. The work started that day in a
+local repository; on that date nothing had been pushed and no remote was set.

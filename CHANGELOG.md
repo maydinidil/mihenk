@@ -6,4 +6,15 @@ All notable changes to mihenk are recorded here. The format follows
 
 ## Unreleased
 
-### Added: the repository, licence, design and stage 0-1 plan
+### Added
+
+- The repository, licence (PolyForm Noncommercial 1.0.0), design and the plan for stages 0 and 1.
+- A local server on 127.0.0.1 that checks Host, Origin and a one-time key on every request.
+- The screens skeleton, built into the package, with API types generated from the server.
+- The launcher: the window, the server thread and a release check (`--smoke`).
+- Driving the installed Chrome or Edge, and a test guard that keeps every test on this machine.
+- A licence allow-list check, a third-party notices file in every build, and a lint that refuses
+  arithmetic on price fields.
+- PyInstaller builds, the Windows installer script and the macOS disk image script.
+- Continuous integration on Windows and macOS.
+- Decision records 0001 to 0005.

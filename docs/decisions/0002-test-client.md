@@ -21,6 +21,10 @@ Add `httpx2` to the dev group. Keep `httpx` there too.
 `httpx2` brings in `httpcore2` (BSD-3-Clause) and `truststore` (MIT). `httpx2` itself is
 BSD-3-Clause. None of the three is GPL, AGPL or LGPL.
 
+`uv.lock` also lists `httpx2-jsfetch` 1.0, but only for the emscripten platform (Python in a web
+page). It is never installed on Windows or macOS, so its licence was not read; the licence check
+(`tools/check_licenses.py`) covers it if it is ever installed.
+
 ## What it does not change
 
 Only the dev group changes. The runtime dependencies are untouched. The capture task adds `httpx2`

@@ -200,3 +200,29 @@ def test_gzip_pages_are_decoded(site: LocalSite) -> None:
         page = fetch_page(client, site.url("/gz"))
     assert page.html == html
     assert page.raw == html.encode()
+
+
+def test_before_request_is_called_for_the_page_and_every_redirect_hop(site: LocalSite) -> None:
+    site.redirect("/old", "/mid", status=301)
+    site.redirect("/mid", "/new")
+    site.add("/new", "<p>new</p>")
+    seen: list[str] = []
+    with make_client("en") as client:
+        page = fetch_page(client, site.url("/old"), before_request=seen.append)
+    assert seen == [site.url("/old"), site.url("/mid"), site.url("/new")]
+    assert page.final_url == site.url("/new")
+
+
+def test_before_request_can_stop_a_redirect_before_it_is_requested(site: LocalSite) -> None:
+    site.redirect("/old", "/private")
+    site.add("/private", "<p>secret</p>")
+
+    def refuse_private(url: str) -> None:
+        if url.endswith("/private"):
+            raise FetchFailure(CaptureStatus.BLOCKED_BY_ROBOTS, "not for robots")
+
+    with make_client("en") as client, pytest.raises(FetchFailure) as caught:
+        fetch_page(client, site.url("/old"), before_request=refuse_private)
+    assert caught.value.status is CaptureStatus.BLOCKED_BY_ROBOTS
+    assert caught.value.detail == "not for robots"
+    assert site.hits == ["/old"]

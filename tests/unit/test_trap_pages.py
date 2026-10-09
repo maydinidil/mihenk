@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import re
+import socket
+import struct
+import time
 from typing import Any
 
 import httpx
@@ -252,3 +255,22 @@ def test_never_idle_page_also_gets_a_slow_poll_route(site: LocalSite) -> None:
 def test_other_pages_get_no_poll_route(site: LocalSite) -> None:
     serve_page(site, "static-table")
     assert "/poll" not in site.routes
+
+
+def test_a_client_that_leaves_during_a_delay_leaves_no_traceback(
+    site: LocalSite, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # The never-idle page's /poll answers after five seconds, and the browser closes the page
+    # first. The server must not print a traceback for the connection nobody is waiting on.
+    site.add("/slow", "<p>x</p>", delay_s=0.4)
+    port = int(site.base_url.rsplit(":", 1)[1])
+    with socket.create_connection(("127.0.0.1", port)) as connection:
+        connection.sendall(b"GET /slow HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        deadline = time.monotonic() + 5
+        while "/slow" not in site.hits:  # the server has read the request and is now delaying
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        # Closing with a zero linger time resets the connection, so the server's write fails.
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    time.sleep(1.0)
+    assert capfd.readouterr().err == ""

@@ -505,3 +505,34 @@ def test_browser_option_help_mentions_the_browser_history(
     assert "--browser" in help_text
     assert "history" in help_text
     assert "one-time key" in help_text
+
+
+# --- the command line: capture and install-browser go to cli.main --------------------------------
+
+
+@pytest.mark.parametrize("command", ["capture", "install-browser"])
+def test_command_line_commands_are_handed_to_the_cli(
+    command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+    monkeypatch.setattr(launcher.cli, "main", lambda argv: seen.append(list(argv)) or 7)
+    monkeypatch.setattr(launcher, "_run", lambda args: pytest.fail("the window must not open"))
+    assert launcher.main([command, "http://127.0.0.1/x", "--key", "k"]) == 7
+    assert seen == [[command, "http://127.0.0.1/x", "--key", "k"]]
+
+
+def test_without_an_argument_the_command_line_is_sys_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The console script and `python -m mihenk` call main() with no argument.
+    seen: list[list[str]] = []
+    monkeypatch.setattr(launcher.cli, "main", lambda argv: seen.append(list(argv)) or 3)
+    monkeypatch.setattr(sys, "argv", ["mihenk", "capture", "http://127.0.0.1/x"])
+    assert launcher.main() == 3
+    assert seen == [["capture", "http://127.0.0.1/x"]]
+
+
+def test_window_options_are_not_handed_to_the_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, servers: _Servers
+) -> None:
+    monkeypatch.setattr(launcher.cli, "main", lambda argv: pytest.fail("not a cli command"))
+    monkeypatch.setattr(launcher, "run_window", lambda url: None)
+    assert launcher.main(["--data-dir", str(tmp_path / "data")]) == 0

@@ -75,14 +75,21 @@ class LocalSite:
                     return
                 if route.delay_s:
                     time.sleep(route.delay_s)
-                self.send_response(route.status)
-                self.send_header("Content-Type", route.content_type)
-                self.send_header("Content-Length", str(len(route.body)))
-                for name, value in route.headers.items():
-                    self.send_header(name, value)
-                self.end_headers()
-                if not head:
-                    self.wfile.write(route.body)
+                try:
+                    self.send_response(route.status)
+                    self.send_header("Content-Type", route.content_type)
+                    self.send_header("Content-Length", str(len(route.body)))
+                    for name, value in route.headers.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    if not head:
+                        self.wfile.write(route.body)
+                except ConnectionError:
+                    # The client gave up while the route was delaying (a page that polls for
+                    # ever, closed by the browser): BrokenPipeError, ConnectionAbortedError or
+                    # ConnectionResetError. Nobody is left to answer, and a traceback on stderr
+                    # would only hide real failures.
+                    self.close_connection = True
 
             def log_message(self, format: str, *args: object) -> None:
                 return

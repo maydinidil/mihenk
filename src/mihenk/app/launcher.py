@@ -11,6 +11,7 @@ import logging
 import re
 import secrets
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -21,6 +22,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
+from mihenk import cli
 from mihenk.api.routes.smoke import SmokeSignal
 from mihenk.api.security import GuardConfig
 from mihenk.api.server import create_app
@@ -201,7 +203,17 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# The first argument that hands the whole command line to the command-line interface instead of
+# opening the window.
+_CLI_COMMANDS = frozenset({"capture", "install-browser"})
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    # The console script and `python -m mihenk` call this with no argument: the command line is
+    # then sys.argv[1:].
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in _CLI_COMMANDS:
+        return cli.main(arguments)
     args = _parse(argv)  # --help and a bad option exit here, as argparse does
     try:
         return _run(args)

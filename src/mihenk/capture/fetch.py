@@ -5,7 +5,7 @@ from __future__ import annotations
 import codecs
 import re
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -107,17 +107,28 @@ def _check_deadline(deadline: float) -> None:
 
 
 @contextmanager
-def _open(client: http.Client, url: str, deadline: float) -> Iterator[http.Response]:
+def _open(
+    client: http.Client,
+    url: str,
+    deadline: float,
+    before_request: Callable[[str], None] | None = None,
+) -> Iterator[http.Response]:
     """The final response of a GET, its body still unread.
 
     Redirects are followed here, not by httpx2, which reads a redirect's body in full before it
     follows: an endless or huge 3xx body would sit outside the size caps and the deadline. A
     redirect's response is closed unread. At most MAX_REDIRECTS are followed; the next one raises
     `TooManyRedirects`. The deadline is checked before every request.
+
+    `before_request` is called with the URL of every request, the first one and each redirect
+    hop, after the previous response was closed and before the next one is sent. It may raise
+    `FetchFailure` to stop (pacing and robots.txt checks for the site a redirect leads to).
     """
     request = client.build_request("GET", url)
     redirects = 0
     while True:
+        if before_request is not None:
+            before_request(str(request.url))
         _check_deadline(deadline)
         response = client.send(request, stream=True, follow_redirects=False)
         following = response.next_request
@@ -147,11 +158,15 @@ def _read_capped(response: http.Response, cap: int, deadline: float) -> bytes:
 
 
 def fetch_page(
-    client: http.Client, url: str, *, deadline_s: float = PAGE_DEADLINE_S
+    client: http.Client,
+    url: str,
+    *,
+    deadline_s: float = PAGE_DEADLINE_S,
+    before_request: Callable[[str], None] | None = None,
 ) -> FetchedPage:
     deadline = time.monotonic() + deadline_s
     try:
-        with _open(client, url, deadline) as response:
+        with _open(client, url, deadline, before_request) as response:
             raw = _read_capped(response, MAX_PAGE_BYTES, deadline)
             headers = {k: response.headers[k] for k in KEPT_HEADERS if k in response.headers}
             html, encoding = decode_html(raw, response.headers.get("content-type"))

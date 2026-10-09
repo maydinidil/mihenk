@@ -13,19 +13,27 @@ from urllib.parse import urlsplit
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def host_key(url: str) -> str:
-    """The site a URL belongs to, spelled one way, so no spelling gets its own pacing slot.
+def idna_host(url: str) -> str:
+    """The host of a URL, spelled one way: lower-case IDNA, no trailing dot, no port.
 
-    Lower-case IDNA host without a trailing dot, plus the port only when it is not the scheme's
-    default. Never the user name or password.
+    An IPv6 address keeps its square brackets. A name that is not valid IDNA stays as written
+    (already lower-cased by `hostname`). Never the user name or password.
     """
-    parts = urlsplit(url)
-    host = (parts.hostname or "").rstrip(".")
-    # A name that is not valid IDNA stays as written (already lower-cased by hostname).
+    host = (urlsplit(url).hostname or "").rstrip(".")
     with contextlib.suppress(UnicodeError):
         host = host.encode("idna").decode("ascii")
     if ":" in host:
         host = f"[{host}]"
+    return host
+
+
+def host_key(url: str) -> str:
+    """The site a URL belongs to, spelled one way, so no spelling gets its own pacing slot.
+
+    The IDNA host, plus the port only when it is not the scheme's default.
+    """
+    parts = urlsplit(url)
+    host = idna_host(url)
     port = parts.port
     if port is None or port == _DEFAULT_PORTS.get(parts.scheme.lower()):
         return host

@@ -56,7 +56,11 @@ class ServerThread:
     def __init__(self, app: FastAPI, sock: socket.socket) -> None:
         # proxy_headers=False: uvicorn otherwise trusts X-Forwarded-* from 127.0.0.1, and every
         # caller of this server is on 127.0.0.1, so any local program could set them.
-        config = uvicorn.Config(app, log_level="warning", access_log=False, proxy_headers=False)
+        # log_config=None: uvicorn's default config needs a console (the windowed build has
+        # none) and stops its loggers propagating, so server errors would miss mihenk.log.
+        config = uvicorn.Config(
+            app, log_level="warning", access_log=False, proxy_headers=False, log_config=None
+        )
         self._server = uvicorn.Server(config)
         self._sock = sock
         self._thread = threading.Thread(target=self._run, name="mihenk-server", daemon=True)

@@ -21,6 +21,7 @@ dependencies = [
   # are the pair the Windows release check of the frozen build passed with (design §17).
   "pythonnet==3.2.1; sys_platform == 'win32'",
   "clr_loader==0.3.1; sys_platform == 'win32'",
+  "protego>=0.7.0,<0.8",
 ]
 
 [project.scripts]

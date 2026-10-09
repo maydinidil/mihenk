@@ -28,6 +28,8 @@ STATUSES = frozenset(
 )
 # `StructuredKind` (Task 1.5) is checked against this set in tests/unit/test_structured.py.
 STRUCTURED_KINDS = frozenset({"jsonld", "next_data", "nuxt_data", "json_script"})
+# The recipe actions (Task 1.8) are checked against this set in tests/unit/test_recipe.py.
+ACTION_KINDS = frozenset({"click_text", "click_selector", "select_option"})
 
 # How long `/poll` takes to answer on the never-idle page, so the network never goes idle.
 POLL_DELAY_S = 5

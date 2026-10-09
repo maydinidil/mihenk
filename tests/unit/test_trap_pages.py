@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from tests.helpers.pages import (
+    ACTION_KINDS,
     METHODS,
     PAGES_DIR,
     STATUSES,
@@ -61,7 +62,6 @@ EXPECT_KEYS = {
     "locale",
 }
 STATE_KEYS = {"label", "actions", "text_contains", "text_lacks"}
-ACTION_KINDS = {"click_text", "click_selector", "select_option"}
 LOCALE_KEYS = {"html_lang", "content_language", "currency_symbols", "currency_codes", "vat_phrases"}
 
 URL = re.compile(rb"https?://[^\s\"'<>()\\]*", re.IGNORECASE)

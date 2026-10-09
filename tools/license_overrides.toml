@@ -1,0 +1,8 @@
+# One table per package whose metadata does not state an SPDX licence.
+# [package-name]
+# spdx = "BSD-3-Clause"
+# source = "https://... (where the licence was read)"
+
+[clr-loader]
+spdx = "MIT"
+source = "https://github.com/pythonnet/clr-loader (project URL in the package metadata); read clr_loader-0.3.1.dist-info/licenses/LICENSE in the installed distribution"

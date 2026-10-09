@@ -16,7 +16,10 @@ a = Analysis(  # noqa: F821
     pathex=[os.path.join(ROOT, "src")],
     datas=datas,
     # pywebview would otherwise pull in every GUI backend it finds; Qt is GPL (§18).
-    excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy", "gi", "tkinter"],
+    # pydantic.mypy drags in the dev-only type checker and cffi's build shim drags in
+    # setuptools; neither runs in the app, and neither is in the notices.
+    excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy", "gi", "tkinter",
+              "mypy", "mypy_extensions", "pydantic.mypy", "setuptools"],
 )
 pyz = PYZ(a.pure)  # noqa: F821
 exe = EXE(  # noqa: F821

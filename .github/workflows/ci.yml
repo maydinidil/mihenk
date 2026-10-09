@@ -1,0 +1,105 @@
+name: CI
+
+# Every check from CLAUDE.md, on Windows 11 x64 and macOS (Apple silicon), on every push and
+# pull request. Third-party actions are pinned to a full commit SHA, with the version in a comment.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # One shell on both systems. bash stops at the first failing command; the default Windows
+    # shell (PowerShell) only reports the exit code of a step's last command.
+    shell: bash
+
+jobs:
+  checks:
+    name: checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest] # macos-latest runners are Apple silicon
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Install the Python dependencies from uv.lock
+        run: uv sync --locked
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the screens' dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Type check Python (mypy)
+        run: uv run mypy
+
+      - name: Lint the screens
+        working-directory: web
+        run: npm run lint
+
+      - name: Type check the screens
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Test the screens
+        working-directory: web
+        run: npm test
+
+      - name: Build the screens
+        working-directory: web
+        run: npm run build
+
+      - name: Dump the OpenAPI document
+        run: uv run python tools/dump_openapi.py
+
+      - name: Regenerate the API types
+        working-directory: web
+        run: npm run gen:api
+
+      - name: Check the API types are committed
+        run: |
+          git diff --exit-code web/openapi.json web/src/api/schema.ts || {
+            echo "::error::The API types are out of date. Run tools/dump_openapi.py and 'npm run gen:api' in web/, then commit web/openapi.json and web/src/api/schema.ts."
+            exit 1
+          }
+
+      - name: Python tests
+        env:
+          # Both runner images include Chrome; the browser tests must run, not skip.
+          MIHENK_REQUIRE_BROWSER: "1"
+        run: uv run pytest
+
+      - name: Licence allow-list
+        run: uv run python tools/check_licenses.py
+
+      - name: Price arithmetic lint
+        run: uv run python tools/check_price_arithmetic.py

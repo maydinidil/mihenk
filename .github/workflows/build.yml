@@ -1,0 +1,228 @@
+name: Build
+
+# Frozen builds of the app (design §16, §17): the Windows installer, the macOS disk image and
+# the wheel. Runs by hand, nightly on main and on pushes to release/* branches. Every build is
+# followed by the release check (--smoke) on the built app. Third-party actions are pinned to a
+# full commit SHA, with the version in a comment.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Scheduled workflows always run on the default branch (main).
+    - cron: "23 2 * * *"
+  push:
+    branches:
+      - "release/*"
+
+permissions:
+  contents: read
+
+# A newer run for the same ref makes the older one pointless.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # bash stops at the first failing command; the default Windows shell (PowerShell) only
+    # reports the exit code of a step's last command. Steps that need PowerShell say so.
+    shell: bash
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest] # macos-latest runners are Apple silicon
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Install the Python dependencies from uv.lock
+        run: uv sync --locked
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the screens' dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Read the app version
+        run: |
+          version="$(uv run python -c "from mihenk import __version__; print(__version__)")"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::Unexpected version '$version' from src/mihenk/__init__.py"; exit 1 ;;
+          esac
+          echo "MIHENK_VERSION=$version" >> "$GITHUB_ENV"
+          echo "mihenk version: $version"
+
+      - name: Build the screens
+        working-directory: web
+        run: npm run build
+
+      # The wheel build and the frozen app both refuse to run without this file.
+      - name: Generate the third-party notices
+        run: uv run python tools/gen_notices.py
+
+      # One wheel is enough, so only the macOS job builds it. Always --wheel, never plain
+      # `uv build`: the build hook needs the notices file, and an sdist is not shipped.
+      - name: Build the wheel
+        if: runner.os == 'macOS'
+        run: uv build --wheel
+
+      - name: Freeze the app with PyInstaller
+        run: uv run pyinstaller packaging/mihenk.spec --noconfirm
+
+      # ---- Windows: installer, silent install, release check of the installed app ----
+
+      - name: Find or install Inno Setup 6.3 or newer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          $known = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not $iscc -and (Test-Path $known)) { $iscc = $known }
+          if (-not $iscc) {
+            Write-Host 'iscc not found; installing Inno Setup with Chocolatey.'
+            choco install innosetup -y --no-progress
+            # 0 is success; 1641 and 3010 mean a reboot is pending, which the runner does not need.
+            if ($LASTEXITCODE -notin 0, 1641, 3010) { throw "choco install innosetup failed with exit code $LASTEXITCODE" }
+            if (Test-Path $known) { $iscc = $known }
+          }
+          if (-not $iscc) { throw 'Inno Setup is still missing after the install.' }
+          Write-Host "iscc: $iscc"
+          # The version banner goes into the log. ArchitecturesAllowed=x64compatible needs 6.3+.
+          $banner = (& $iscc '/?' 2>&1 | Out-String)
+          Write-Host $banner
+          if ($banner -match 'Inno Setup (\d+)\.(\d+)') {
+            if ([version]"$($Matches[1]).$($Matches[2])" -lt [version]'6.3') {
+              throw "Inno Setup $($Matches[1]).$($Matches[2]) is too old; mihenk.iss needs 6.3 or newer."
+            }
+          } else {
+            Write-Host '::warning::Could not read the Inno Setup version from the iscc banner.'
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download the WebView2 bootstrapper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # mihenk.iss expects the file next to itself. The file is git-ignored.
+          $target = Join-Path $PWD 'packaging\windows\MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $target
+          $file = Get-Item $target
+          Write-Host "Downloaded $($file.Name), $($file.Length) bytes"
+          if ($file.Length -lt 1MB) { throw 'The WebView2 bootstrapper download looks truncated.' }
+          # It ships inside our installer, so check that Microsoft signed it.
+          $sig = Get-AuthenticodeSignature $target
+          Write-Host "Signature: $($sig.Status), $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft') {
+            throw 'The WebView2 bootstrapper is not validly signed by Microsoft.'
+          }
+
+      - name: Compile the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:ISCC "/DAppVersion=$env:MIHENK_VERSION" 'packaging\windows\mihenk.iss'
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed with exit code $LASTEXITCODE" }
+          $setup = Join-Path $PWD "dist\mihenk-$env:MIHENK_VERSION-windows-x64-setup.exe"
+          if (-not (Test-Path $setup)) { throw "Expected installer not found: $setup" }
+          Write-Host "Built $setup ($((Get-Item $setup).Length) bytes)"
+
+      - name: Install silently
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Join-Path $PWD "dist\mihenk-$env:MIHENK_VERSION-windows-x64-setup.exe"
+          $log = Join-Path $env:RUNNER_TEMP 'mihenk-install.log'
+          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
+          if (Test-Path $log) { Get-Content $log -Tail 40 }
+          if ($p.ExitCode -ne 0) { throw "The installer exited with code $($p.ExitCode)" }
+
+      # A non-zero exit code fails the job: 1 means the window did not open or connect in time.
+      - name: Release check of the installed app (--smoke)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\mihenk\mihenk.exe'
+          if (-not (Test-Path $exe)) { throw "The installed app is missing: $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--smoke' -Wait -PassThru
+          Write-Host "mihenk.exe --smoke exited with code $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "The release check failed with exit code $($p.ExitCode)" }
+
+      - name: Upload the Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mihenk-windows-installer
+          path: dist/mihenk-*-windows-x64-setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---- macOS: release check of the .app, disk image, wheel ----
+
+      # A non-zero exit code fails the job: 1 means the window did not open or connect in time.
+      - name: Release check of the built app (--smoke)
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: dist/mihenk.app/Contents/MacOS/mihenk --smoke
+
+      - name: Make the disk image
+        if: runner.os == 'macOS'
+        run: sh packaging/macos/make_dmg.sh "$MIHENK_VERSION"
+
+      # The job fails if the image does not mount. The listing goes into the log so the layout
+      # of the volume can be read there.
+      - name: Check the disk image mounts
+        if: runner.os == 'macOS'
+        run: |
+          dmg="dist/mihenk-${MIHENK_VERSION}-macos-arm64.dmg"
+          test -f "$dmg"
+          mountpoint="$RUNNER_TEMP/mihenk-dmg"
+          mkdir -p "$mountpoint"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" "$dmg"
+          ls -la "$mountpoint"
+          if [ ! -d "$mountpoint/mihenk.app" ]; then
+            echo "::warning::mihenk.app is not at the root of the disk image; check the listing above."
+          fi
+          hdiutil detach "$mountpoint"
+
+      - name: Upload the disk image
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mihenk-macos-dmg
+          path: dist/mihenk-*-macos-arm64.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the wheel
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mihenk-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30

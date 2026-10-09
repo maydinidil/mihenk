@@ -18,3 +18,12 @@ All notable changes to mihenk are recorded here. The format follows
 - PyInstaller builds, the Windows installer script and the macOS disk image script.
 - Continuous integration on Windows and macOS.
 - Decision records 0001 to 0005.
+- Trap pages for the tests: small made-up pricing pages that reproduce what breaks a capture.
+- The robots.txt check before every request and redirect, and polite pacing per site.
+- Fetching pages with limits on time, size and redirects, decoded the way browsers decode them.
+- Page text, embedded data (JSON-LD, Next.js and Nuxt data) and locale signals: currencies and VAT
+  wording in seven languages.
+- Snapshot folders, written once, with a hash for every file.
+- Rendering in the installed Chrome or Edge, including clicking a billing toggle.
+- `mihenk capture` and `mihenk install-browser` (Chromium is downloaded only after a yes).
+- Decision record 0006 and the stage 1 record.

@@ -5,6 +5,7 @@ from tools.gen_notices import (
     bootloader_exception_section,
     distribution_notice,
     folder_notice,
+    python_runtime_notice,
 )
 
 MIT_TEXT = (
@@ -133,3 +134,37 @@ def test_bootloader_exception_section_is_only_the_section_that_holds_it() -> Non
     assert "unlimited permission to link or embed" in section
     assert "must not be repeated" not in section
     assert "Apache text." not in section
+
+
+PSF_TEXT = "A. HISTORY OF THE SOFTWARE\n\nPython was created in the early 1990s."
+
+
+def test_python_runtime_notice_reproduces_the_runtime_licence(tmp_path: Path) -> None:
+    (tmp_path / "LICENSE.txt").write_text(PSF_TEXT, encoding="utf-8")
+    (tmp_path / "python.exe").write_text("not a licence", encoding="utf-8")
+    text = python_runtime_notice(tmp_path, "3.13.13")
+    assert "Python 3.13.13 (PSF-2.0)" in text
+    assert PSF_TEXT in text
+    assert "not a licence" not in text
+
+
+def test_python_runtime_notice_accepts_a_licence_file_with_another_name(tmp_path: Path) -> None:
+    (tmp_path / "LICENSE").write_text(PSF_TEXT, encoding="utf-8")
+    text = python_runtime_notice(tmp_path, "3.13.13")
+    assert PSF_TEXT in text
+    assert "no licence file" not in text
+
+
+def test_python_runtime_notice_without_a_licence_file_says_so(tmp_path: Path) -> None:
+    text = python_runtime_notice(tmp_path, "3.13.13")
+    assert "Python 3.13.13 (PSF-2.0)" in text
+    assert "no licence file" in text
+
+
+def test_python_runtime_notice_finds_the_licence_in_the_unix_standard_library_folder(
+    tmp_path: Path,
+) -> None:
+    stdlib = tmp_path / "lib" / "python3.13"
+    stdlib.mkdir(parents=True)
+    (stdlib / "LICENSE.txt").write_text(PSF_TEXT, encoding="utf-8")
+    assert PSF_TEXT in python_runtime_notice(tmp_path, "3.13.13")

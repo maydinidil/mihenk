@@ -17,6 +17,10 @@ dependencies = [
   "pywebview>=6.2.1,<6.3",
   "platformdirs>=4.12,<5",
   "playwright>=1.63,<1.64",
+  # pywebview does not pin pythonnet, and a brand-new release can break the loader. These two
+  # are the pair the Windows release check of the frozen build passed with (design §17).
+  "pythonnet==3.2.1; sys_platform == 'win32'",
+  "clr_loader==0.3.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]

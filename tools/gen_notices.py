@@ -7,7 +7,8 @@ order, each part under a heading with the package name, version and SPDX express
 2. the Node.js binary and Playwright core bundled in the playwright wheel (`playwright/driver/`);
 3. the Microsoft WebView2 SDK files bundled in the pywebview wheel (`webview/lib/`);
 4. PyInstaller's licence section holding the bootloader exception;
-5. every production npm package of the screens.
+5. the CPython runtime that PyInstaller embeds in the frozen app (PSF-2.0);
+6. every production npm package of the screens.
 
 Everything is read from what is already installed; nothing is fetched. The wheel build
 (hatch_build.py) refuses to run without this file, and the file is git-ignored on purpose.
@@ -16,6 +17,7 @@ Everything is read from what is already installed; nothing is fetched. The wheel
 from __future__ import annotations
 
 import json
+import platform
 import re
 import sys
 from importlib import metadata
@@ -134,6 +136,25 @@ def _pyinstaller_notice() -> str:
     return f"{heading}\n\n{_file_block(files[0].as_posix() + ' (bootloader exception section)', section)}"
 
 
+def python_runtime_notice(prefix: Path, version: str) -> str:
+    """Heading plus the licence text of the CPython runtime installed under `prefix`.
+
+    The frozen app embeds this runtime, so its licence ships with the app. `LICENSE.txt` is
+    the usual file; other LICENSE or COPYING names are taken when it is missing. Unix builds
+    keep the file in the standard library folder (`lib/python3.x/`), so that is looked at last.
+    """
+    heading = _heading(f"Python {version} (PSF-2.0)")
+    folders = [prefix, *sorted((prefix / "lib").glob("python3*"))]
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        files = sorted(p for p in folder.iterdir() if p.is_file() and _is_notice_name(p.name))
+        files.sort(key=lambda p: (p.name != "LICENSE.txt", p.name != "LICENSE"))
+        if files:
+            return "\n\n".join([heading, _file_block(files[0].name, _read(files[0]))])
+    return "\n\n".join([heading, NO_LICENCE_FILE])
+
+
 def _npm_notice(name: str) -> str:
     folder = ROOT / "web" / "node_modules" / name
     package = json.loads((folder / "package.json").read_text("utf-8"))
@@ -196,6 +217,10 @@ def build_notices() -> tuple[str, list[str]]:
         ),
     )
     sections.append(_pyinstaller_notice())
+    add(
+        "python runtime",
+        python_runtime_notice(Path(sys.base_prefix), platform.python_version()),
+    )
     for name in sorted(set(check_licenses.npm_runtime_packages()), key=str.lower):
         add(f"npm {name}", _npm_notice(name))
     return "\n\n\n".join(sections) + "\n", missing

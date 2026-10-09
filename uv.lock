@@ -318,9 +318,11 @@ wheels = [
 name = "mihenk"
 source = { editable = "." }
 dependencies = [
+    { name = "clr-loader", marker = "sys_platform == 'win32'" },
     { name = "fastapi" },
     { name = "platformdirs" },
     { name = "playwright" },
+    { name = "pythonnet", marker = "sys_platform == 'win32'" },
     { name = "pywebview" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -338,9 +340,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "clr-loader", marker = "sys_platform == 'win32'", specifier = "==0.3.1" },
     { name = "fastapi", specifier = ">=0.143.0,<0.144" },
     { name = "platformdirs", specifier = ">=4.12,<5" },
     { name = "playwright", specifier = ">=1.63,<1.64" },
+    { name = "pythonnet", marker = "sys_platform == 'win32'", specifier = "==3.2.1" },
     { name = "pywebview", specifier = ">=6.2.1,<6.3" },
     { name = "starlette", specifier = ">=1.7,<2" },
     { name = "uvicorn", specifier = ">=0.54,<0.55" },

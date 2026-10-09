@@ -5,13 +5,31 @@ Used only on the capture thread, so it needs no lock.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
 
 def host_key(url: str) -> str:
-    return urlsplit(url).netloc.lower()
+    """The site a URL belongs to, spelled one way, so no spelling gets its own pacing slot.
+
+    Lower-case IDNA host without a trailing dot, plus the port only when it is not the scheme's
+    default. Never the user name or password.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    # A name that is not valid IDNA stays as written (already lower-cased by hostname).
+    with contextlib.suppress(UnicodeError):
+        host = host.encode("idna").decode("ascii")
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    if port is None or port == _DEFAULT_PORTS.get(parts.scheme.lower()):
+        return host
+    return f"{host}:{port}"
 
 
 class Pace:

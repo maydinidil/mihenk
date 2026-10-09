@@ -19,6 +19,15 @@ def test_disallowed_path() -> None:
     assert "rules" in decision.reason
 
 
+@pytest.mark.parametrize(
+    "text", ["User-agent: *\nDisallow: /pricing\n", "User-agent: mihenk\nDisallow: /\n"]
+)
+def test_bom_does_not_hide_the_first_group(text: str) -> None:
+    # Files saved by some Windows editors start with a UTF-8 byte order mark.
+    with_bom = RobotsFetch(200, b"\xef\xbb\xbf" + text.encode("utf-8"), "fetched")
+    assert not decide(with_bom, PAGE).allowed
+
+
 def test_specific_group_beats_star() -> None:
     text = "User-agent: mihenk\nDisallow: /\n\nUser-agent: *\nAllow: /\n"
     assert not decide(ok(text), PAGE).allowed

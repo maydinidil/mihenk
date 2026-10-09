@@ -2384,7 +2384,8 @@ def decide(fetch: RobotsFetch, page_url: str) -> RobotsDecision:
     if status is None:
         return RobotsDecision(False, f"robots.txt {fetch.detail}; treated as disallow-all")
     if 200 <= status < 300:
-        text = (fetch.body or b"")[:MAX_ROBOTS_BYTES].decode("utf-8", errors="replace")
+        # utf-8-sig: a byte order mark would otherwise hide the first group's user-agent line.
+        text = (fetch.body or b"")[:MAX_ROBOTS_BYTES].decode("utf-8-sig", errors="replace")
         if Protego.parse(text).can_fetch(page_url, USER_AGENT_TOKEN):
             return RobotsDecision(True, "allowed by the robots.txt rules")
         return RobotsDecision(False, "disallowed by the robots.txt rules")
@@ -2479,13 +2480,32 @@ Used only on the capture thread, so it needs no lock.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def host_key(url: str) -> str:
-    return urlsplit(url).netloc.lower()
+    """The site a URL belongs to, spelled one way, so no spelling gets its own pacing slot.
+
+    Lower-case IDNA host without a trailing dot, plus the port only when it is not the scheme's
+    default. Never the user name or password.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    # A name that is not valid IDNA stays as written (already lower-cased by hostname).
+    with contextlib.suppress(UnicodeError):
+        host = host.encode("idna").decode("ascii")
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    if port is None or port == _DEFAULT_PORTS.get(parts.scheme.lower()):
+        return host
+    return f"{host}:{port}"
 
 
 class Pace:

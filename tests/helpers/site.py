@@ -22,6 +22,8 @@ class LocalSite:
     def __init__(self) -> None:
         self.routes: dict[str, Route] = {}
         self.hits: list[str] = []
+        # time.monotonic() of each hit, in step with `hits`: for tests of pacing.
+        self.hit_times: list[float] = []
         self._server: ThreadingHTTPServer | None = None
 
     def add(
@@ -67,6 +69,7 @@ class LocalSite:
             def _serve(self, *, head: bool) -> None:
                 path = self.path.split("?", 1)[0]
                 site.hits.append(path)
+                site.hit_times.append(time.monotonic())
                 route = site.routes.get(path)
                 if route is None:
                     self.send_response(404)

@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,35 @@ def test_a_data_folder_that_is_a_file_is_one_clear_line_and_exit_1(
     assert re.match(r"mihenk capture: failed: \w*Error: ", captured.err)
 
 
+def test_every_request_to_one_site_is_paced_including_robots_txt_redirect_hops(
+    site: LocalSite, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # http://x/robots.txt -> https://x/robots.txt is the common case; here a redirect on one site.
+    monkeypatch.setattr(cli, "PACE_INTERVAL_S", 0.5)
+    site.redirect("/robots.txt", "/real-robots.txt")
+    site.add("/real-robots.txt", "User-agent: *\nAllow: /\n", content_type="text/plain")
+    url = serve_page(site, "static-table")
+    assert cli.main(["capture", url, "--data-dir", str(tmp_path)]) == 0
+    assert site.hits == ["/robots.txt", "/real-robots.txt", "/static-table"]
+    gaps = [later - earlier for earlier, later in pairwise(site.hit_times)]
+    assert all(gap >= 0.45 for gap in gaps), gaps
+
+
+def test_a_robots_txt_redirect_loop_is_paced_on_every_hop(
+    site: LocalSite, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "PACE_INTERVAL_S", 0.2)
+    site.redirect("/robots.txt", "/robots-a")
+    site.redirect("/robots-a", "/robots-b")
+    site.redirect("/robots-b", "/robots-a")
+    url = serve_page(site, "static-table")
+    assert cli.main(["capture", url, "--data-dir", str(tmp_path)]) == 1  # unreachable: disallowed
+    assert "/static-table" not in site.hits
+    assert len(site.hits) == 6  # robots.txt and five redirects
+    gaps = [later - earlier for earlier, later in pairwise(site.hit_times)]
+    assert all(gap >= 0.18 for gap in gaps), gaps
+
+
 def _run_module(*args: str) -> subprocess.CompletedProcess[str]:
     """`python -m mihenk ...` in a child process, as a person starts it."""
     return subprocess.run(
@@ -179,6 +209,8 @@ def test_python_dash_m_mihenk_capture_by_fetch_uses_the_real_pace(
     assert (label, status) == ("default", "ok")
     assert Path(folder).is_dir()
     assert site.hits[:2] == ["/robots.txt", "/static-table"]
+    # Two seconds between requests to one site (design §8.2), the robots.txt request included.
+    assert site.hit_times[1] - site.hit_times[0] >= 1.9
 
 
 def test_every_state_gets_its_own_line_in_a_child_process(tmp_path: Path) -> None:

@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 
 # Markers that only a challenge or block page carries, so they count at any status.
-_ALWAYS = ("px-captcha", "captcha-delivery", "cf-chl-", "incapsula incident id")
-# Cloudflare's JavaScript detections and Imperva's resource script are also injected into ordinary
-# pages the site served without a challenge, so they count only when the site refused the request.
-_WHEN_REFUSED = ("/cdn-cgi/challenge-platform", "_incapsula_resource")
+_ALWAYS = ("px-captcha", "captcha-delivery", "_cf_chl_opt", "incapsula incident id")
+# Cloudflare's JavaScript detections, its Turnstile widget (a hidden input whose id starts with
+# "cf-chl-widget") and Imperva's resource script are also on ordinary pages the site served
+# without a challenge, so they count only when the site refused the request.
+_WHEN_REFUSED = ("/cdn-cgi/challenge-platform", "cf-chl-", "_incapsula_resource")
 _REFUSING_STATUSES = (403, 429, 503)
 _TITLES = ("just a moment", "attention required", "access denied", "please verify you are a human")
 _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)

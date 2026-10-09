@@ -55,11 +55,29 @@ def test_imperva_resource_needs_a_refusing_status() -> None:
 
 
 @pytest.mark.parametrize(
-    "marker", ["px-captcha", "captcha-delivery", "cf-chl-bypass", "Incapsula incident ID: 123"]
+    "marker",
+    ["px-captcha", "captcha-delivery", "window._cf_chl_opt={", "Incapsula incident ID: 123"],
 )
 @pytest.mark.parametrize("status", [200, 403, None])
 def test_vendor_challenge_markers_are_walls_at_any_status(status: int | None, marker: str) -> None:
     assert looks_like_bot_wall(status, _page(body=f"<div id='x'>{marker}</div>"))
+
+
+TURNSTILE_INPUT = (
+    '<input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-abc_response">'
+)
+
+
+def test_a_turnstile_widget_on_an_ordinary_200_page_is_not_a_wall() -> None:
+    # Cloudflare Turnstile puts this hidden input into the ordinary pages that have a form.
+    form = f"<form action='/signup'>{TURNSTILE_INPUT}</form>"
+    assert not looks_like_bot_wall(200, _page(body="<p>Starter €9 / month</p>" + form))
+    assert not looks_like_bot_wall(None, _page(body="<p>Starter €9 / month</p>" + form))
+
+
+def test_the_cloudflare_challenge_marker_with_status_403_is_a_wall() -> None:
+    assert looks_like_bot_wall(403, _page(body=TURNSTILE_INPUT))
+    assert looks_like_bot_wall(503, _page(body=TURNSTILE_INPUT))
 
 
 def test_only_the_first_200000_characters_are_read() -> None:

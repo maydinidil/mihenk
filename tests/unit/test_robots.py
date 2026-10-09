@@ -81,3 +81,47 @@ def test_gate_fetches_once_per_site() -> None:
     assert gate.check("https://shop.example/a").allowed
     assert gate.check("https://shop.example/b").allowed
     assert calls == ["https://shop.example/robots.txt"]
+
+
+@pytest.mark.parametrize(
+    ("page", "robots"),
+    [
+        ("HTTP://Shop.Example/x", "http://shop.example/robots.txt"),
+        ("http://shop.example:80/x", "http://shop.example/robots.txt"),
+        ("https://shop.example:443/x", "https://shop.example/robots.txt"),
+        ("http://shop.example:443/x", "http://shop.example:443/robots.txt"),
+        ("http://shop.example./x", "http://shop.example/robots.txt"),
+        ("http://user:pw@shop.example/x", "http://shop.example/robots.txt"),
+        ("http://user:pw@shop.example:8080/x?a=b#c", "http://shop.example:8080/robots.txt"),
+        ("https://bücher.example/preise", "https://xn--bcher-kva.example/robots.txt"),
+        ("http://[::1]:80/x", "http://[::1]/robots.txt"),
+        ("http://[::1]:8080/x", "http://[::1]:8080/robots.txt"),
+    ],
+)
+def test_robots_url_names_a_site_one_way(page: str, robots: str) -> None:
+    assert robots_url(page) == robots
+
+
+def test_one_site_spelled_two_ways_gets_one_robots_fetch() -> None:
+    calls: list[str] = []
+
+    def fetch(url: str) -> RobotsFetch:
+        calls.append(url)
+        return ok("User-agent: *\nAllow: /\n")
+
+    gate = RobotsGate(fetch)
+    assert gate.check("http://127.0.0.1:80/x").allowed  # as typed
+    assert gate.check("http://127.0.0.1/x").allowed  # as the http client normalises it
+    assert gate.check("HTTP://127.0.0.1/y").allowed
+    assert calls == ["http://127.0.0.1/robots.txt"]
+
+
+def test_the_robots_request_never_carries_the_user_name_or_password() -> None:
+    calls: list[str] = []
+
+    def fetch(url: str) -> RobotsFetch:
+        calls.append(url)
+        return ok("User-agent: *\nAllow: /\n")
+
+    RobotsGate(fetch).check("http://user:secret@shop.example/pricing")
+    assert calls == ["http://shop.example/robots.txt"]

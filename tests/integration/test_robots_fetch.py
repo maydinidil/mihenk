@@ -6,6 +6,7 @@ import httpx2
 import pytest
 
 from mihenk.capture.fetch import fetch_robots, make_client
+from mihenk.capture.pace import Pace, host_key
 from mihenk.capture.robots import (
     MAX_REDIRECTS,
     MAX_ROBOTS_BYTES,
@@ -180,3 +181,38 @@ def test_robots_url_that_cannot_be_requested_does_not_raise(url: str) -> None:
         fetched = fetch_robots(client, url)
     assert fetched.status is None
     assert fetched.detail.startswith("unreachable: ")
+
+
+def test_before_request_is_called_for_robots_txt_and_every_redirect_hop(site: LocalSite) -> None:
+    site.redirect("/robots.txt", "/real-robots.txt")
+    site.add("/real-robots.txt", RULES, content_type="text/plain")
+    seen: list[str] = []
+    with make_client("en") as client:
+        fetched = fetch_robots(client, site.url("/robots.txt"), before_request=seen.append)
+    assert fetched.status == 200
+    assert seen == [site.url("/robots.txt"), site.url("/real-robots.txt")]
+
+
+def test_a_robots_redirect_loop_is_announced_before_each_of_its_requests(site: LocalSite) -> None:
+    site.redirect("/robots.txt", "/robots-a")
+    site.redirect("/robots-a", "/robots-b")
+    site.redirect("/robots-b", "/robots-a")
+    seen: list[str] = []
+    with make_client("en") as client:
+        fetched = fetch_robots(client, site.url("/robots.txt"), before_request=seen.append)
+    assert fetched.status is None
+    assert len(seen) == len(site.hits) == MAX_REDIRECTS + 1
+
+
+def test_a_redirecting_robots_txt_is_paced_before_both_requests(site: LocalSite) -> None:
+    site.redirect("/robots.txt", "/real-robots.txt")
+    site.add("/real-robots.txt", RULES, content_type="text/plain")
+    pace = Pace(0.4)
+    with make_client("en") as client:
+        fetch_robots(
+            client,
+            site.url("/robots.txt"),
+            before_request=lambda url: pace.wait(host_key(url)),
+        )
+    assert site.hits == ["/robots.txt", "/real-robots.txt"]
+    assert site.hit_times[1] - site.hit_times[0] >= 0.35

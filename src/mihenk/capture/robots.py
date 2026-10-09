@@ -13,6 +13,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from protego import Protego
 
+from mihenk.capture.pace import host_key
+
 USER_AGENT_TOKEN = "mihenk"  # noqa: S105 - a robots.txt product token, not a secret
 MAX_ROBOTS_BYTES = 512 * 1024
 MAX_REDIRECTS = 5
@@ -32,8 +34,15 @@ class RobotsDecision:
 
 
 def robots_url(page_url: str) -> str:
-    parts = urlsplit(page_url)
-    return urlunsplit((parts.scheme, parts.netloc, "/robots.txt", "", ""))
+    """The robots.txt of a page's site, with the site spelled one way (as `host_key` does).
+
+    The scheme in lower case, the host in IDNA without a trailing dot or the scheme's default
+    port, IPv6 in brackets, and no user name or password. The gate caches by this address, so
+    `HTTP://Shop.example:80/x` and `http://shop.example/x` cost one fetch, and a password in a
+    typed address is never sent on to robots.txt.
+    """
+    scheme = urlsplit(page_url).scheme.lower()
+    return urlunsplit((scheme, host_key(page_url), "/robots.txt", "", ""))
 
 
 def decide(fetch: RobotsFetch, page_url: str) -> RobotsDecision:

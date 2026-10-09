@@ -229,6 +229,18 @@ def test_ignoring_robots_captures_the_disallowed_page(
     assert "/robots.txt" not in site.hits
 
 
+def test_a_site_spelled_two_ways_costs_one_robots_txt_fetch(
+    site: LocalSite, tmp_path: Path, client: http.Client
+) -> None:
+    # capture_page checks the address as typed; the fetch hook checks the address as the http
+    # client normalises it (lower-case scheme). Both are the same site.
+    serve_page(site, "static-table")
+    typed = site.url("/static-table").replace("http://", "HTTP://", 1)
+    result = _only(capture_page(_spec("static-table", typed), _ctx(tmp_path, client)))
+    assert result.status is CaptureStatus.OK
+    assert site.hits.count("/robots.txt") == 1
+
+
 def test_a_500_is_http_error_and_the_page_is_kept(
     site: LocalSite, tmp_path: Path, client: http.Client
 ) -> None:

@@ -230,9 +230,12 @@ def _capture(args: argparse.Namespace) -> int:
     try:
         pace = Pace(PACE_INTERVAL_S)
 
-        def fetch_robots_paced(url: str) -> RobotsFetch:
+        def pace_request(url: str) -> None:
             pace.wait(host_key(url))
-            return fetch_robots(client, url)
+
+        def fetch_robots_paced(url: str) -> RobotsFetch:
+            # Every request robots.txt takes, its redirect hops included, is paced like a page.
+            return fetch_robots(client, url, before_request=pace_request)
 
         ctx = RunContext(
             run_id=new_run_id(datetime.now(UTC)),

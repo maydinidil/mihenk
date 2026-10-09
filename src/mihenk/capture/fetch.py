@@ -188,12 +188,20 @@ def fetch_page(
 
 
 def fetch_robots(
-    client: http.Client, url: str, *, deadline_s: float = ROBOTS_DEADLINE_S
+    client: http.Client,
+    url: str,
+    *,
+    deadline_s: float = ROBOTS_DEADLINE_S,
+    before_request: Callable[[str], None] | None = None,
 ) -> RobotsFetch:
-    """Never raises: every failure is a `RobotsFetch` with no status, which `decide` disallows."""
+    """Never raises: every failure is a `RobotsFetch` with no status, which `decide` disallows.
+
+    `before_request` is called with the URL of every request, robots.txt itself and each redirect
+    hop, as for `fetch_page`. It is for pacing, so it must not raise.
+    """
     deadline = time.monotonic() + deadline_s
     try:
-        with _open(client, url, deadline) as response:
+        with _open(client, url, deadline, before_request) as response:
             body = b""
             for chunk in response.iter_bytes():
                 body += chunk

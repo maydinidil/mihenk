@@ -26,6 +26,8 @@ STATUSES = frozenset(
         "action_failed",
     }
 )
+# `StructuredKind` (Task 1.5) is checked against this set in tests/unit/test_structured.py.
+STRUCTURED_KINDS = frozenset({"jsonld", "next_data", "nuxt_data", "json_script"})
 
 # How long `/poll` takes to answer on the never-idle page, so the network never goes idle.
 POLL_DELAY_S = 5

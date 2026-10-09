@@ -17,6 +17,7 @@ from tests.helpers.pages import (
     METHODS,
     PAGES_DIR,
     STATUSES,
+    STRUCTURED_KINDS,
     load_expectations,
     page_names,
     serve_page,
@@ -61,7 +62,6 @@ EXPECT_KEYS = {
 }
 STATE_KEYS = {"label", "actions", "text_contains", "text_lacks"}
 ACTION_KINDS = {"click_text", "click_selector", "select_option"}
-STRUCTURED_KINDS = {"jsonld", "next_data", "nuxt_data", "json_script"}
 LOCALE_KEYS = {"html_lang", "content_language", "currency_symbols", "currency_codes", "vat_phrases"}
 
 URL = re.compile(rb"https?://[^\s\"'<>()\\]*", re.IGNORECASE)

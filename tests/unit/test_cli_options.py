@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import io
 import re
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from mihenk import cli
+from mihenk.capture import browser as browser_module
 from mihenk.capture.models import SAFE_SEGMENT
 
 # --- the region of a locale name ----------------------------------------------------------------
@@ -150,6 +153,64 @@ def test_bad_states_are_refused_with_exit_2(
     assert len(err.strip().splitlines()) == 1
 
 
+class _Started(Exception):
+    """Raised by a stand-in for something that must not start."""
+
+
+def _nothing_may_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Playwright and the http client: either one starting fails the test."""
+
+    def playwright_started() -> object:
+        raise _Started("Playwright was started")
+
+    def client_opened(locale: str) -> object:
+        raise _Started("an http client was opened")
+
+    monkeypatch.setattr(cli, "sync_playwright", playwright_started)
+    monkeypatch.setattr(cli, "make_client", client_opened)
+
+
+@pytest.mark.parametrize("method", ["fetch", "render", "render_interact"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "gopher://127.0.0.1/",
+        "ftp://127.0.0.1/pricing",
+        "file:///C:/pricing.html",
+        "javascript:alert(1)",
+        "http://",
+        "https:///pricing",
+        "http://127.0.0.1:0/",
+        "http://127.0.0.1:99999/",
+        "http://127.0.0.1:abc/",
+        "http://[::1/pricing",
+        "pricing",
+        " ",
+    ],
+)
+def test_a_url_that_is_not_http_with_a_host_exits_2_before_anything_starts(
+    url: str,
+    method: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _nothing_may_start(monkeypatch)
+    code, err = _refused(["capture", url, "--method", method], capsys, tmp_path)
+    assert code == 2
+    assert err.startswith("mihenk capture: error: not a valid http(s) URL: ")
+    assert len(err.strip().splitlines()) == 1
+
+
+def test_a_very_long_bad_url_is_cut_in_the_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    _nothing_may_start(monkeypatch)
+    code, err = _refused(["capture", "gopher://" + "a" * 5000], capsys, tmp_path)
+    assert code == 2
+    assert len(err) < 400
+
+
 def _set_proxy_variables(monkeypatch: pytest.MonkeyPatch, proxy: str) -> None:
     """The user's proxy setting, as the app reads it. The suite's autouse fixture sets
     `NO_PROXY=*` so that tests go direct; a test of the app's proxy handling takes that back."""
@@ -197,3 +258,146 @@ def test_no_console_at_all_is_not_an_error() -> None:
 
 def test_the_pace_between_requests_to_one_site_is_two_seconds() -> None:
     assert cli.PACE_INTERVAL_S == 2.0
+
+
+# --- Ctrl+C -------------------------------------------------------------------------------------
+
+
+class _Recorder:
+    """What was closed or left, in order."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+
+def _interrupt(*args: Any, **kwargs: Any) -> Any:
+    raise KeyboardInterrupt
+
+
+def _watch_the_client(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -> None:
+    class Client:
+        def close(self) -> None:
+            recorder.events.append("client closed")
+
+    monkeypatch.setattr(cli, "make_client", lambda locale: Client())
+
+
+def _assert_stopped(code: int, capsys: pytest.CaptureFixture[str]) -> None:
+    captured = capsys.readouterr()
+    assert code == 130
+    assert captured.out == ""
+    assert captured.err == "Stopped.\n"  # no traceback
+
+
+def test_ctrl_c_during_a_fetch_capture_is_130_and_the_client_is_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    recorder = _Recorder()
+    _watch_the_client(monkeypatch, recorder)
+    monkeypatch.setattr(cli, "capture_page", _interrupt)
+    code = cli.main(["capture", "http://127.0.0.1/x", "--data-dir", str(tmp_path)])
+    _assert_stopped(code, capsys)
+    assert recorder.events == ["client closed"]
+
+
+class _Session:
+    """Stands in for `sync_playwright()`: records when it is entered and when it is stopped."""
+
+    def __init__(self, recorder: _Recorder) -> None:
+        self._recorder = recorder
+
+    def __enter__(self) -> object:
+        self._recorder.events.append("playwright started")
+        return object()
+
+    def __exit__(self, *exc: object) -> None:
+        self._recorder.events.append("playwright stopped")
+
+
+def _fake_browser_run(
+    monkeypatch: pytest.MonkeyPatch, recorder: _Recorder, capture: Any, launch: Any = None
+) -> None:
+    class Browser:
+        def close(self) -> None:
+            recorder.events.append("browser closed")
+
+    def launched(pw: object, **kwargs: Any) -> browser_module.LaunchedBrowser:
+        return browser_module.LaunchedBrowser("chrome", Browser())  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli, "sync_playwright", lambda: _Session(recorder))
+    monkeypatch.setattr(cli, "launch_browser", launch or launched)
+    monkeypatch.setattr(cli, "capture_page", capture)
+
+
+def _render_argv(tmp_path: Path) -> list[str]:
+    return ["capture", "http://127.0.0.1/x", "--method", "render", "--data-dir", str(tmp_path)]
+
+
+def test_without_ctrl_c_a_render_capture_closes_the_browser_then_playwright_then_the_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _Recorder()
+    _watch_the_client(monkeypatch, recorder)
+    _fake_browser_run(monkeypatch, recorder, lambda spec, ctx: [])
+    assert cli.main(_render_argv(tmp_path)) == 0
+    assert recorder.events == [
+        "playwright started",
+        "browser closed",
+        "playwright stopped",
+        "client closed",
+    ]
+
+
+def test_ctrl_c_during_a_render_capture_skips_playwrights_cleanup_but_closes_the_client(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    recorder = _Recorder()
+    _watch_the_client(monkeypatch, recorder)
+    _fake_browser_run(monkeypatch, recorder, _interrupt)
+    code = cli.main(_render_argv(tmp_path))
+    _assert_stopped(code, capsys)
+    # Neither the browser nor the Playwright session was closed: their sync calls hang mid-interrupt.
+    assert recorder.events == ["playwright started", "client closed"]
+
+
+def test_ctrl_c_while_the_browser_launches_skips_playwrights_cleanup_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    recorder = _Recorder()
+    _watch_the_client(monkeypatch, recorder)
+    _fake_browser_run(monkeypatch, recorder, lambda spec, ctx: [], launch=_interrupt)
+    code = cli.main(_render_argv(tmp_path))
+    _assert_stopped(code, capsys)
+    assert recorder.events == ["playwright started", "client closed"]
+
+
+def test_ctrl_c_during_the_download_is_130(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli, "install_chromium", _interrupt)
+    code = cli.main(["install-browser", "--yes", "--data-dir", str(tmp_path)])
+    captured = capsys.readouterr()
+    assert code == 130
+    assert captured.err == "Stopped.\n"
+    assert "Done" not in captured.out
+
+
+def test_ctrl_c_at_the_install_prompt_is_130(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    monkeypatch.setattr("builtins.input", _interrupt)
+    monkeypatch.setattr(cli, "install_chromium", lambda data_dir: pytest.fail("asked, then ran"))
+    code = cli.main(["install-browser", "--data-dir", str(tmp_path)])
+    assert code == 130
+    assert capsys.readouterr().err == "Stopped.\n"
+
+
+def test_ctrl_c_during_the_hidden_playwright_entry_is_130(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "playwright_main", _interrupt)
+    saved = list(sys.argv)
+    code = cli.main(["_playwright-install", "install", "chromium"])
+    assert code == 130
+    assert capsys.readouterr().err == "Stopped.\n"
+    assert sys.argv == saved  # the borrowed argv was put back

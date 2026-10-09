@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ from mihenk.capture.browser import LaunchedBrowser
 from mihenk.capture.fetch import MAX_PAGE_BYTES, fetch_robots, make_client
 from mihenk.capture.models import CaptureStatus, Method
 from mihenk.capture.pace import Pace
-from mihenk.capture.recipe import Recipe, State
+from mihenk.capture.recipe import ClickText, Recipe, State
 from mihenk.capture.render import RenderedState, RenderSettings
 from mihenk.capture.robots import RobotsFetch, RobotsGate
 from mihenk.capture.run import CaptureResult, PageSpec, RunContext, capture_page
@@ -253,6 +254,35 @@ def test_a_500_is_http_error_and_the_page_is_kept(
     assert "Something broke" in _read(ref, "text.txt")
 
 
+@pytest.mark.parametrize("status", [300, 301, 302, 399])
+def test_a_3xx_without_a_usable_location_is_http_error_and_the_page_is_kept(
+    site: LocalSite, tmp_path: Path, client: http.Client, status: int
+) -> None:
+    site.add("/moved", "<html><body><p>Moved, somewhere</p></body></html>", status=status)
+    result = _only(capture_page(_spec("moved", site.url("/moved")), _ctx(tmp_path, client)))
+    assert result.status is CaptureStatus.HTTP_ERROR
+    assert result.detail == f"answered {status} without a usable Location"
+    ref = _snapshot(result)
+    assert _meta(ref)["http_status"] == status
+    assert "Moved, somewhere" in _read(ref, "text.txt")
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (200, CaptureStatus.OK),
+        (204, CaptureStatus.OK),
+        (299, CaptureStatus.OK),
+        (300, CaptureStatus.HTTP_ERROR),
+        (399, CaptureStatus.HTTP_ERROR),
+        (400, CaptureStatus.HTTP_ERROR),
+        (None, CaptureStatus.OK),
+    ],
+)
+def test_which_final_statuses_are_a_capture(status: int | None, expected: CaptureStatus) -> None:
+    assert run_module._status_for(status, "<p>Starter €9</p>")[0] is expected
+
+
 def test_a_failed_fetch_is_recorded_without_a_snapshot(
     site: LocalSite, tmp_path: Path, client: http.Client
 ) -> None:
@@ -277,7 +307,31 @@ def test_render_without_a_browser_is_browser_unavailable_for_each_state(
         ("monthly", CaptureStatus.BROWSER_UNAVAILABLE),
     ]
     assert all(r.snapshot is None and r.method is Method.RENDER_INTERACT for r in results)
-    assert "billing-toggle" not in site.hits
+    # Said before anything is requested: not the page, and not robots.txt either.
+    assert site.hits == []
+
+
+def test_the_browser_unavailable_detail_names_the_way_out(
+    site: LocalSite, tmp_path: Path, client: http.Client
+) -> None:
+    spec = _spec("pricing", site.url("/pricing"), Method.RENDER)
+    result = _only(capture_page(spec, _ctx(tmp_path, client, browser=None)))
+    assert result.status is CaptureStatus.BROWSER_UNAVAILABLE
+    assert result.detail == (
+        "no Chrome, Edge or downloaded Chromium was found; "
+        'run "mihenk install-browser" to download Chromium'
+    )
+    assert site.hits == []
+
+
+def test_no_browser_is_said_even_for_a_page_robots_disallows(
+    site: LocalSite, tmp_path: Path, client: http.Client
+) -> None:
+    site.add("/robots.txt", DISALLOW_ALL, content_type="text/plain")
+    spec = _spec("pricing", site.url("/pricing"), Method.RENDER)
+    result = _only(capture_page(spec, _ctx(tmp_path, client, browser=None)))
+    assert result.status is CaptureStatus.BROWSER_UNAVAILABLE
+    assert site.hits == []
 
 
 class _BrokenBrowser:
@@ -474,6 +528,53 @@ def test_render_that_ends_on_a_disallowed_site_keeps_no_snapshot(
     assert "disallowed" in result.detail
     assert result.snapshot is None
     assert "/robots.txt" in target.hits
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.browser
+def test_a_state_that_ends_on_the_browsers_error_page_is_http_error_without_a_snapshot(
+    site: LocalSite, tmp_path: Path, client: http.Client, browser: LaunchedBrowser
+) -> None:
+    # The click leads to an address nothing listens on: Chrome shows its own error page, and the
+    # state ends on chrome-error://chromewebdata/, whose text is not the vendor's.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = f"http://127.0.0.1:{probe.getsockname()[1]}/checkout"
+    site.add("/start", f'<!doctype html><title>Start</title><a href="{closed}">Checkout</a>')
+    states = [State(label="start"), State(label="checkout", actions=[ClickText(text="Checkout")])]
+    spec = _spec("start", site.url("/start"), Method.RENDER_INTERACT, states=states)
+    results = capture_page(spec, _ctx(tmp_path, client, browser=browser.browser))
+    start, checkout = results
+    assert start.status is CaptureStatus.OK
+    assert checkout.status is CaptureStatus.HTTP_ERROR
+    assert checkout.detail == "the browser showed an error page"
+    assert checkout.snapshot is None
+    assert [path.name for path in (tmp_path / "run-1" / "start").iterdir()] == ["start"]
+
+
+def test_a_final_url_that_is_not_http_is_http_error_without_a_snapshot(
+    site: LocalSite,
+    tmp_path: Path,
+    client: http.Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The same case with a stand-in render, for a browser that is not at hand.
+    html = "<p>This site cannot be reached</p>"
+    error_page = RenderedState(
+        "default",
+        "chrome-error://chromewebdata/",
+        200,
+        {},
+        html,
+        "This site cannot be reached",
+        b"\x89PNG",
+    )
+    monkeypatch.setattr(run_module, "render_states", lambda *args, **kwargs: [error_page])
+    ctx = _ctx(tmp_path, client, browser=object())
+    result = _only(capture_page(_spec("gone", site.url("/gone"), Method.RENDER), ctx))
+    assert result.status is CaptureStatus.HTTP_ERROR
+    assert result.detail == "the browser showed an error page"
+    assert result.snapshot is None
     assert list(tmp_path.iterdir()) == []
 
 

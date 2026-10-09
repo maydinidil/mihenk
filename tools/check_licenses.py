@@ -169,6 +169,16 @@ def python_runtime_names() -> list[str]:
     return [requirement.name for requirement in python_runtime_requirements()]
 
 
+def needed_here(requirement: Requirement) -> bool:
+    """Whether this platform needs the package: it has no environment marker, or its marker holds.
+
+    A package that is not installed is skipped only when this is False (a Windows-only package
+    on macOS, and the other way round). The licence check and the notices (tools/gen_notices.py)
+    both ask this, so that they treat such a package the same way.
+    """
+    return requirement.marker is None or requirement.marker.evaluate()
+
+
 def _classifier_expression(classifiers: list[str]) -> str | None:
     """The mapped licence, or None when any `License ::` classifier is not in the map."""
     licences = [c for c in classifiers if c.startswith("License ::")]
@@ -239,7 +249,7 @@ def _check_python(overrides: dict[str, Override], problems: list[str]) -> None:
         try:
             expression = python_expression(name, overrides)
         except metadata.PackageNotFoundError:
-            if requirement.marker is not None and not requirement.marker.evaluate():
+            if not needed_here(requirement):
                 print(
                     f"skip {name}: not installed on this platform (checked on the other CI system)"
                 )

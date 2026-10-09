@@ -152,3 +152,37 @@ def test_the_billing_toggle_expectations_make_a_valid_recipe() -> None:
     assert json.loads(recipe.model_dump_json())["states"][1]["actions"] == [
         {"kind": "click_text", "text": "Monthly", "exact": True}
     ]
+
+
+# --- bounds: the limit is accepted, one over is refused ---------------------------------------
+
+
+def test_a_select_value_of_200_characters_is_accepted_and_201_is_refused() -> None:
+    assert len(SelectOption(selector="#r", value="x" * 200).value) == 200
+    with pytest.raises(ValidationError, match="at most 200 characters"):
+        SelectOption(selector="#r", value="x" * 201)
+
+
+def test_a_state_of_20_actions_is_accepted_and_21_is_refused() -> None:
+    actions = [ClickSelector(selector=f"#step-{n}") for n in range(21)]
+    assert len(State(label="many", actions=actions[:20]).actions) == 20
+    with pytest.raises(ValidationError, match="at most 20 items"):
+        State(label="many", actions=actions)
+
+
+def test_a_recipe_of_20_states_is_accepted_and_21_is_refused() -> None:
+    states = [State(label=f"state-{n}") for n in range(21)]
+    recipe = Recipe(method=Method.RENDER_INTERACT, states=states[:20])
+    assert len(recipe.states) == 20
+    with pytest.raises(ValidationError, match="at most 20 items"):
+        Recipe(method=Method.RENDER_INTERACT, states=states)
+
+
+def test_the_bounds_hold_for_json_too() -> None:
+    too_many = {"label": "many", "actions": [{"kind": "click_selector", "selector": "#a"}] * 21}
+    with pytest.raises(ValidationError, match="at most 20 items"):
+        State.model_validate(too_many)
+    with pytest.raises(ValidationError, match="at most 200 characters"):
+        SelectOption.model_validate_json(
+            json.dumps({"kind": "select_option", "selector": "#r", "value": "x" * 201})
+        )

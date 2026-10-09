@@ -14,19 +14,35 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Playwright
 
 from mihenk import cli
 from mihenk.capture import browser
 from mihenk.capture.browser import (
+    BrowserUnavailable,
     browsers_dir,
     has_downloaded_chromium,
     install_chromium,
     install_command,
+    launch_browser,
     start_playwright_env,
 )
+
+# The empty file Playwright writes into a browser folder once it has extracted all of it.
+COMPLETE_MARKER = "INSTALLATION_COMPLETE"
+
+
+def _finished_download(data_dir: Path, name: str = "chromium-1243") -> Path:
+    """A browser folder as a finished Playwright download leaves it."""
+    folder = browsers_dir(data_dir) / name
+    folder.mkdir(parents=True)
+    (folder / COMPLETE_MARKER).write_text("", encoding="utf-8")
+    return folder
+
 
 # --- the install command ------------------------------------------------------------------------
 
@@ -59,8 +75,31 @@ def test_browsers_live_in_the_data_folder(tmp_path: Path) -> None:
 
 def test_detects_a_downloaded_chromium(tmp_path: Path) -> None:
     assert not has_downloaded_chromium(tmp_path)
-    (browsers_dir(tmp_path) / "chromium-1243").mkdir(parents=True)
+    _finished_download(tmp_path)
     assert has_downloaded_chromium(tmp_path)
+
+
+def test_a_folder_without_the_complete_marker_is_not_a_download(tmp_path: Path) -> None:
+    folder = browsers_dir(tmp_path) / "chromium-1243"
+    folder.mkdir(parents=True)
+    assert not has_downloaded_chromium(tmp_path)  # empty
+    (folder / "chrome-win64").mkdir()
+    (folder / "chrome-win64" / "chrome.exe").write_bytes(b"half")
+    assert not has_downloaded_chromium(tmp_path)  # extracted in part, never marked
+    (folder / COMPLETE_MARKER).write_text("", encoding="utf-8")
+    assert has_downloaded_chromium(tmp_path)  # Playwright's mark makes it count
+
+
+def test_an_unfinished_revision_does_not_hide_a_finished_one(tmp_path: Path) -> None:
+    (browsers_dir(tmp_path) / "chromium-1300").mkdir(parents=True)
+    assert not has_downloaded_chromium(tmp_path)
+    _finished_download(tmp_path, "chromium-1243")
+    assert has_downloaded_chromium(tmp_path)
+
+
+def test_a_marker_that_is_a_folder_does_not_count(tmp_path: Path) -> None:
+    (browsers_dir(tmp_path) / "chromium-1243" / COMPLETE_MARKER).mkdir(parents=True)
+    assert not has_downloaded_chromium(tmp_path)
 
 
 def test_an_empty_browsers_folder_has_no_chromium(tmp_path: Path) -> None:
@@ -70,7 +109,7 @@ def test_an_empty_browsers_folder_has_no_chromium(tmp_path: Path) -> None:
 
 def test_the_headless_shell_and_other_browsers_are_not_a_chromium(tmp_path: Path) -> None:
     for name in ("chromium_headless_shell-1243", "ffmpeg-1011", "firefox-1500"):
-        (browsers_dir(tmp_path) / name).mkdir(parents=True)
+        _finished_download(tmp_path, name)  # finished, but not a Chromium
     assert not has_downloaded_chromium(tmp_path)
 
 
@@ -78,6 +117,79 @@ def test_a_file_called_chromium_is_not_a_download(tmp_path: Path) -> None:
     browsers_dir(tmp_path).mkdir()
     (browsers_dir(tmp_path) / "chromium-1243").write_text("not a folder", encoding="utf-8")
     assert not has_downloaded_chromium(tmp_path)
+
+
+# --- the order the browsers are tried in ---------------------------------------------------------
+
+
+class _Chromium:
+    """Stands in for `playwright.chromium`: records the channels tried, in order."""
+
+    def __init__(self, working: set[str], not_found: str) -> None:
+        self.working = working
+        self.not_found = not_found
+        self.tried: list[str] = []
+
+    def launch(self, *, channel: str, headless: bool) -> str:
+        self.tried.append(channel)
+        if channel not in self.working:
+            raise PlaywrightError(self.not_found.format(channel=channel))
+        return f"browser {channel}"
+
+
+_NOT_FOUND = "Chromium distribution '{channel}' is not found at C:/somewhere/chrome.exe"
+
+
+def _playwright(
+    working: set[str] | None = None, not_found: str = _NOT_FOUND
+) -> tuple[Playwright, _Chromium]:
+    chromium = _Chromium(working or set(), not_found)
+    return cast(Playwright, SimpleNamespace(chromium=chromium)), chromium
+
+
+def test_a_downloaded_chromium_is_tried_last_after_chrome_and_edge() -> None:
+    pw, chromium = _playwright()
+    with pytest.raises(BrowserUnavailable) as raised:
+        launch_browser(pw, allow_downloaded=True)
+    assert chromium.tried == ["chrome", "msedge", "chromium"]
+    assert raised.value.tried == ("chrome", "msedge", "chromium")
+
+
+def test_the_downloaded_chromium_is_never_tried_without_consent() -> None:
+    pw, chromium = _playwright(working={"chromium"})  # it would launch, if it were tried
+    with pytest.raises(BrowserUnavailable) as raised:
+        launch_browser(pw)
+    assert chromium.tried == ["chrome", "msedge"]
+    assert raised.value.tried == ("chrome", "msedge")
+    with pytest.raises(BrowserUnavailable):
+        launch_browser(pw, allow_downloaded=False)
+    assert "chromium" not in chromium.tried
+
+
+@pytest.mark.parametrize(
+    ("working", "tried", "channel"),
+    [
+        ({"chrome", "msedge", "chromium"}, ["chrome"], "chrome"),
+        ({"msedge", "chromium"}, ["chrome", "msedge"], "msedge"),
+        ({"chromium"}, ["chrome", "msedge", "chromium"], "chromium"),
+    ],
+)
+def test_the_first_browser_that_launches_ends_the_search(
+    working: set[str], tried: list[str], channel: str
+) -> None:
+    pw, chromium = _playwright(working=working)
+    launched = launch_browser(pw, allow_downloaded=True)
+    assert chromium.tried == tried
+    assert launched.channel == channel
+
+
+def test_a_chromium_that_is_not_downloaded_is_a_missing_browser_not_an_error() -> None:
+    # Playwright words a missing download differently from a missing Chrome or Edge.
+    missing = "Executable doesn't exist at C:/browsers/{channel}/chrome.exe"
+    pw, chromium = _playwright(not_found=missing)
+    with pytest.raises(BrowserUnavailable):
+        launch_browser(pw, allow_downloaded=True)
+    assert chromium.tried == ["chrome", "msedge", "chromium"]
 
 
 # --- the environment Playwright starts with -----------------------------------------------------
@@ -171,10 +283,66 @@ def test_playwright_install_entry_turns_the_exit_into_an_int(
 def test_playwright_install_entry_hands_over_options_argparse_would_refuse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # --no-shell and --version are Playwright's, not argparse's, so they pass straight through.
     seen: list[list[str]] = []
     _fake_playwright_main(monkeypatch, 0, seen)
-    assert cli.main(["_playwright-install", "--no-such-option", "-h"]) == 0
-    assert seen == [["playwright", "--no-such-option", "-h"]]
+    assert cli.main(["_playwright-install", "--version"]) == 0
+    assert cli.main(["_playwright-install", "install", "chromium", "--no-shell"]) == 0
+    assert seen == [
+        ["playwright", "--version"],
+        ["playwright", "install", "chromium", "--no-shell"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "rest",
+    [
+        [],
+        ["install"],  # a bare install downloads every browser into Playwright's global cache
+        ["install", "--with-deps"],
+        ["install", "firefox"],
+        ["install", "chromium", "firefox"],
+        ["install", "chromium", "--with-deps"],
+        ["install", "chromium", "--no-shell", "--force"],
+        ["install", "--no-shell", "chromium"],
+        ["install", "chromium", "--no-shell", "--no-shell"],
+        ["install-deps"],
+        ["uninstall", "--all"],
+        ["--version", "install"],
+        ["-V"],
+        ["-h"],
+        ["--help"],
+        ["--no-such-option"],
+        ["open", "https://example.invalid"],
+    ],
+)
+def test_the_hidden_entry_refuses_anything_mihenk_does_not_need(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], rest: list[str]
+) -> None:
+    seen: list[list[str]] = []
+    _fake_playwright_main(monkeypatch, 0, seen)
+    code = cli.main(["_playwright-install", *rest])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert seen == []  # Playwright was not called
+    assert captured.out == ""
+    assert len(captured.err.strip().splitlines()) == 1
+    assert "only 'install chromium [--no-shell]' and '--version'" in captured.err
+
+
+def test_the_real_driver_answers_a_version_query_without_the_network() -> None:
+    # `--version` asks the driver that ships in the wheel, and nothing else: no download, no
+    # request. The suite's guard covers this process only, so the command is the proof.
+    result = subprocess.run(
+        [sys.executable, "-m", "mihenk", "_playwright-install", "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Version 1." in result.stdout
 
 
 def test_playwright_install_entry_returns_when_main_returns(
@@ -195,14 +363,21 @@ def test_the_hidden_entry_is_not_in_the_help(capsys: pytest.CaptureFixture[str])
 
 
 class _Install:
-    """Stands in for install_chromium: counts the calls and returns an exit code."""
+    """Stands in for install_chromium: counts the calls and returns an exit code.
 
-    def __init__(self, code: int = 0) -> None:
+    A run that exits 0 leaves a finished download behind, as Playwright does, unless `finishes`
+    is False (a download that ended with 0 but never completed).
+    """
+
+    def __init__(self, code: int = 0, *, finishes: bool = True) -> None:
         self.code = code
+        self.finishes = finishes
         self.folders: list[Path] = []
 
     def __call__(self, data_dir: Path) -> int:
         self.folders.append(data_dir)
+        if self.code == 0 and self.finishes:
+            _finished_download(data_dir)
         return self.code
 
 
@@ -297,6 +472,40 @@ def test_install_browser_yes_skips_the_question(
     monkeypatch.setattr("builtins.input", must_not_ask)
     assert cli.main(["install-browser", "--yes", "--data-dir", str(tmp_path)]) == 0
     assert install.folders == [tmp_path]
+
+
+def test_done_is_said_after_a_finished_download(
+    tmp_path: Path, install: _Install, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["install-browser", "--yes", "--data-dir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "Done." in captured.out
+    assert captured.err == ""
+    assert has_downloaded_chromium(tmp_path)
+
+
+def test_an_exit_code_of_0_without_a_finished_download_is_not_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = _Install(finishes=False)
+    monkeypatch.setattr(cli, "install_chromium", fake)
+    (browsers_dir(tmp_path) / "chromium-1243").mkdir(parents=True)  # started, never marked
+    assert cli.main(["install-browser", "--yes", "--data-dir", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert fake.folders == [tmp_path]
+    assert "Done" not in captured.out
+    assert "did not finish" in captured.err
+    assert len(captured.err.strip().splitlines()) == 1
+
+
+def test_an_exit_code_of_0_with_nothing_downloaded_is_not_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "install_chromium", _Install(finishes=False))
+    assert cli.main(["install-browser", "--yes", "--data-dir", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert "Done" not in captured.out
+    assert "did not finish" in captured.err
 
 
 def test_a_failed_download_is_exit_code_1_and_says_so(

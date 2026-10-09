@@ -16,7 +16,12 @@ from tests.helpers.site import LocalSite
 
 _real_connect = socket.socket.connect
 _real_connect_ex = socket.socket.connect_ex
+_real_sendto = socket.socket.sendto
 _real_getaddrinfo = socket.getaddrinfo
+_real_gethostbyname = socket.gethostbyname
+_real_gethostbyname_ex = socket.gethostbyname_ex
+_real_gethostbyaddr = socket.gethostbyaddr
+_real_getnameinfo = socket.getnameinfo
 
 
 class NetworkBlocked(RuntimeError):
@@ -74,9 +79,47 @@ def _check_resolvable(host: Any) -> None:
         raise _attempts.block(f"a test tried to resolve {name!r}") from None
 
 
+def _check_loopback_name(host: Any) -> None:
+    """Only `localhost` and loopback IP literals may be looked up, by name or by address.
+
+    Stricter than `_check_resolvable`, which lets any IP literal through because `getaddrinfo`
+    needs no query for one: a reverse lookup (`gethostbyaddr`, `getnameinfo`) of a public
+    address does send a query, and the guard has no use for any other address anyway.
+    """
+    name = host.decode("ascii", "replace") if isinstance(host, bytes) else str(host)
+    if name.lower() == "localhost":
+        return
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        raise _attempts.block(f"a test tried to look up {name!r}") from None
+    if not ip.is_loopback:
+        raise _attempts.block(f"a test tried to look up {name}")
+
+
 def _guarded_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
     _check_resolvable(host)
     return _real_getaddrinfo(host, *args, **kwargs)
+
+
+def _guarded_gethostbyname(host: Any) -> Any:
+    _check_loopback_name(host)
+    return _real_gethostbyname(host)
+
+
+def _guarded_gethostbyname_ex(host: Any) -> Any:
+    _check_loopback_name(host)
+    return _real_gethostbyname_ex(host)
+
+
+def _guarded_gethostbyaddr(host: Any) -> Any:
+    _check_loopback_name(host)
+    return _real_gethostbyaddr(host)
+
+
+def _guarded_getnameinfo(sockaddr: Any, flags: Any) -> Any:
+    _check_loopback_name(sockaddr[0])
+    return _real_getnameinfo(sockaddr, flags)
 
 
 def _guarded_connect(self: socket.socket, address: Any) -> None:
@@ -89,16 +132,34 @@ def _guarded_connect_ex(self: socket.socket, address: Any) -> int:
     return _real_connect_ex(self, address)
 
 
+def _guarded_sendto(self: socket.socket, data: Any, *args: Any) -> int:
+    # sendto(data, address) or sendto(data, flags, address): the address is the last argument.
+    if args:
+        address = args[-1]
+        if not (isinstance(address, tuple) and str(address[0]).lower() == "localhost"):
+            _check(self, address)
+    return _real_sendto(self, data, *args)
+
+
 if sys.platform == "win32":
     # Windows' default asyncio loop connects through the IOCP proactor (ConnectEx), which never
     # calls socket.connect, so it needs its own guard.
     from asyncio.windows_events import IocpProactor
 
     _real_proactor_connect = IocpProactor.connect
+    _real_proactor_sendto = IocpProactor.sendto
 
     def _guarded_proactor_connect(self: IocpProactor, conn: socket.socket, address: Any) -> Any:
         _check(conn, address)
         return _real_proactor_connect(self, conn, address)
+
+    def _guarded_proactor_sendto(
+        self: IocpProactor, conn: socket.socket, buf: Any, flags: int = 0, addr: Any = None
+    ) -> Any:
+        # The same loop sends UDP datagrams through WSASendTo, which never calls socket.sendto.
+        if addr is not None:  # None: a socket that was connected, and so checked, before
+            _check(conn, addr)
+        return _real_proactor_sendto(self, conn, buf, flags, addr)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -110,10 +171,16 @@ def pytest_configure(config: pytest.Config) -> None:
     patches = pytest.MonkeyPatch()
     config.add_cleanup(patches.undo)
     patches.setattr(socket, "getaddrinfo", _guarded_getaddrinfo)
+    patches.setattr(socket, "gethostbyname", _guarded_gethostbyname)
+    patches.setattr(socket, "gethostbyname_ex", _guarded_gethostbyname_ex)
+    patches.setattr(socket, "gethostbyaddr", _guarded_gethostbyaddr)
+    patches.setattr(socket, "getnameinfo", _guarded_getnameinfo)
     patches.setattr(socket.socket, "connect", _guarded_connect)
     patches.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
+    patches.setattr(socket.socket, "sendto", _guarded_sendto)
     if sys.platform == "win32":
         patches.setattr(IocpProactor, "connect", _guarded_proactor_connect)
+        patches.setattr(IocpProactor, "sendto", _guarded_proactor_sendto)
 
 
 @pytest.fixture(autouse=True)

@@ -348,6 +348,7 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pyinstaller" },
     { name = "pytest" },
     { name = "ruff" },
@@ -372,6 +373,7 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", specifier = ">=1.10" },
+    { name = "packaging", specifier = ">=26.3" },
     { name = "pyinstaller", specifier = ">=6.22.3" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.5" },

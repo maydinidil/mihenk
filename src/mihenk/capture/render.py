@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
-from playwright.sync_api import Browser, Dialog, Page, Request, Response
+from playwright.sync_api import Browser, BrowserContext, Dialog, Page, Request, Response
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -139,14 +139,16 @@ def _settle(page: Page, watch: _PageWatch, settings: RenderSettings) -> None:
 
 
 def _perform(page: Page, action: Action) -> None:
+    # `.first` of the visible matches: sites ship a hidden mobile and desktop copy of a toggle,
+    # and the hidden one may come first in the page.
     try:
         match action:
             case ClickText(text=text, exact=exact):
-                page.get_by_text(text, exact=exact).first.click()
+                page.get_by_text(text, exact=exact).filter(visible=True).first.click()
             case ClickSelector(selector=selector):
-                page.locator(selector).first.click()
+                page.locator(selector).filter(visible=True).first.click()
             case SelectOption(selector=selector, value=value):
-                page.locator(selector).first.select_option(value)
+                page.locator(selector).filter(visible=True).first.select_option(value)
     except PlaywrightError as exc:
         raise _ActionFailed(f"{action.kind}: {exc}") from exc
 
@@ -171,6 +173,35 @@ def _capture_state(page: Page, url: str, state: State, settings: RenderSettings)
     )
 
 
+@contextlib.contextmanager
+def _then_close(close: Callable[[], object]) -> Iterator[None]:
+    """Runs `close` after the block, by three rules for what is in flight when the block ends.
+
+    - Nothing: `close` runs and its error propagates (the caller maps it to `browser_unavailable`).
+    - An `Exception`: `close` runs, and an error from it is dropped so that it cannot replace the
+      one in flight.
+    - Any other `BaseException` (`KeyboardInterrupt`, `SystemExit`): `close` does not run.
+      Playwright's sync calls hang in that state, and the process is leaving anyway.
+    """
+    try:
+        yield
+    except Exception:
+        with contextlib.suppress(Exception):
+            close()
+        raise
+    except BaseException:
+        raise
+    else:
+        close()
+
+
+def _close_pages(context: BrowserContext) -> None:
+    """Closes every page of the context: the state's own and any that the page opened (a
+    `window.open` or a `target=_blank` link), which would otherwise keep running unpaced."""
+    for page in list(context.pages):
+        page.close()
+
+
 def render_states(
     browser: Browser,
     url: str,
@@ -182,27 +213,23 @@ def render_states(
         accept_downloads=False, locale=settings.locale, service_workers="block"
     )
     results: list[RenderedState | StateFailure] = []
-    try:
+    with _then_close(context.close):
         for state in recipe.states:
             before_navigation()
-            # One page per state, in the shared context. Chrome commits the error page of a
-            # failed navigation late, and that interrupts the next navigation on the same page.
-            page = context.new_page()
-            page.set_default_timeout(settings.navigation_timeout_s * 1000)
-            try:
-                results.append(_capture_state(page, url, state, settings))
-            except _ActionFailed as exc:
-                results.append(StateFailure(state.label, CaptureStatus.ACTION_FAILED, str(exc)))
-            except PlaywrightTimeoutError as exc:
-                results.append(StateFailure(state.label, CaptureStatus.TIMEOUT, str(exc)))
-            except PlaywrightError as exc:
-                if not browser.is_connected():
-                    raise  # A browser that died is not the vendor's HTTP error.
-                # Connection refused, a name that does not resolve, an aborted navigation.
-                results.append(StateFailure(state.label, CaptureStatus.HTTP_ERROR, str(exc)))
-            finally:
-                with contextlib.suppress(PlaywrightError):
-                    page.close()
-    finally:
-        context.close()
+            with _then_close(lambda: _close_pages(context)):
+                # One page per state, in the shared context. Chrome commits the error page of a
+                # failed navigation late, and that interrupts the next navigation on the same page.
+                page = context.new_page()
+                page.set_default_timeout(settings.navigation_timeout_s * 1000)
+                try:
+                    results.append(_capture_state(page, url, state, settings))
+                except _ActionFailed as exc:
+                    results.append(StateFailure(state.label, CaptureStatus.ACTION_FAILED, str(exc)))
+                except PlaywrightTimeoutError as exc:
+                    results.append(StateFailure(state.label, CaptureStatus.TIMEOUT, str(exc)))
+                except PlaywrightError as exc:
+                    if not browser.is_connected():
+                        raise  # A browser that died is not the vendor's HTTP error.
+                    # Connection refused, a name that does not resolve, an aborted navigation.
+                    results.append(StateFailure(state.label, CaptureStatus.HTTP_ERROR, str(exc)))
     return results

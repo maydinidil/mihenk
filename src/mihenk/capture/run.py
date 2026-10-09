@@ -48,7 +48,11 @@ class RunContext:
     """Everything one run shares. The robots gate and the pace are shared by every page of the
     run; the http client is not: open one per brand and close it after, never share one across
     brands or runs, because its cookie jar would carry the first site's cookies to the next
-    (design §8.3)."""
+    (design §8.3).
+
+    The robots gate must fetch robots.txt with its own http client, never this one: a cookie
+    that robots.txt sets must not reach the pages (design §8.3).
+    """
 
     run_id: str
     snapshots_root: Path
@@ -66,10 +70,14 @@ def _status_for(http_status: int | None, html: str) -> tuple[CaptureStatus, str]
         return CaptureStatus.NEEDS_HUMAN, "the page is a bot check; a person has to open it"
     if http_status is not None and http_status >= 400:
         return CaptureStatus.HTTP_ERROR, f"answered {http_status}"
+    if http_status is not None and http_status >= 300:
+        # A redirect that was followed never gets here; a 3xx that is the final answer had no
+        # Location to follow, so it holds no page.
+        return CaptureStatus.HTTP_ERROR, f"answered {http_status} without a usable Location"
     return CaptureStatus.OK, "captured"
 
 
-def _is_http_url(url: str) -> bool:
+def is_http_url(url: str) -> bool:
     """An http or https URL with a host and a usable port."""
     try:
         parts = urlsplit(url)
@@ -79,6 +87,12 @@ def _is_http_url(url: str) -> bool:
     return parts.scheme.lower() in ("http", "https") and bool(parts.hostname) and port != 0
 
 
+NO_BROWSER_DETAIL = (
+    "no Chrome, Edge or downloaded Chromium was found; "
+    'run "mihenk install-browser" to download Chromium'
+)
+
+
 def _for_every_state(spec: PageSpec, status: CaptureStatus, detail: str) -> list[CaptureResult]:
     return [
         CaptureResult(spec.key, state.label, spec.recipe.method, status, detail, None)
@@ -86,19 +100,31 @@ def _for_every_state(spec: PageSpec, status: CaptureStatus, detail: str) -> list
     ]
 
 
+def _robots_block(spec: PageSpec, ctx: RunContext) -> list[CaptureResult] | None:
+    """The result for every state when robots.txt disallows the page, or None when it may go on."""
+    if not spec.respect_robots:
+        return None
+    decision = ctx.robots.check(spec.url)
+    if decision.allowed:
+        return None
+    return _for_every_state(spec, CaptureStatus.BLOCKED_BY_ROBOTS, decision.reason)
+
+
 def capture_page(spec: PageSpec, ctx: RunContext) -> list[CaptureResult]:
-    method = spec.recipe.method
-    if not _is_http_url(spec.url):
+    if not is_http_url(spec.url):
         return _for_every_state(
             spec, CaptureStatus.HTTP_ERROR, f"not a valid http(s) URL: {spec.url[:200]!r}"
         )
-    if spec.respect_robots:
-        decision = ctx.robots.check(spec.url)
-        if not decision.allowed:
-            return _for_every_state(spec, CaptureStatus.BLOCKED_BY_ROBOTS, decision.reason)
-    if method is Method.FETCH:
-        return [_capture_fetch(spec, ctx)]
-    return _capture_render(spec, ctx)
+    if spec.recipe.method is Method.FETCH:
+        blocked = _robots_block(spec, ctx)
+        return blocked if blocked is not None else [_capture_fetch(spec, ctx)]
+    browser = ctx.browser
+    if browser is None:
+        # Before the robots check: with no browser there is nothing to render, so no request
+        # (not even robots.txt) is sent.
+        return _for_every_state(spec, CaptureStatus.BROWSER_UNAVAILABLE, NO_BROWSER_DETAIL)
+    blocked = _robots_block(spec, ctx)
+    return blocked if blocked is not None else _capture_render(spec, ctx, browser)
 
 
 def _capture_fetch(spec: PageSpec, ctx: RunContext) -> CaptureResult:
@@ -168,7 +194,7 @@ def _redirect_block(spec: PageSpec, ctx: RunContext, final_url: str) -> str | No
     Chrome follows redirects itself, so the site it ended on (or a path the first site's
     robots.txt allowed but the final one does not) is checked after the state rendered.
     """
-    if not spec.respect_robots or not _is_http_url(final_url):
+    if not spec.respect_robots or not is_http_url(final_url):
         return None
     decision = ctx.robots.check(final_url)
     if decision.allowed:
@@ -176,18 +202,12 @@ def _redirect_block(spec: PageSpec, ctx: RunContext, final_url: str) -> str | No
     return f"the page was reached by a redirect to {host_key(final_url)}: {decision.reason}"
 
 
-def _capture_render(spec: PageSpec, ctx: RunContext) -> list[CaptureResult]:
+def _capture_render(spec: PageSpec, ctx: RunContext, browser: Browser) -> list[CaptureResult]:
     method = spec.recipe.method
-    if ctx.browser is None:
-        return _for_every_state(
-            spec,
-            CaptureStatus.BROWSER_UNAVAILABLE,
-            "no Chrome, Edge or downloaded Chromium was found",
-        )
     host = host_key(spec.url)
     try:
         outcomes = render_states(
-            ctx.browser, spec.url, spec.recipe, ctx.render, lambda: ctx.pace.wait(host)
+            browser, spec.url, spec.recipe, ctx.render, lambda: ctx.pace.wait(host)
         )
     except PlaywrightError as exc:
         # render_states reports a failed state itself. What reaches here is the browser: it could
@@ -198,6 +218,20 @@ def _capture_render(spec: PageSpec, ctx: RunContext) -> list[CaptureResult]:
         if not isinstance(outcome, RenderedState):
             results.append(
                 CaptureResult(spec.key, outcome.label, method, outcome.status, outcome.detail, None)
+            )
+            continue
+        if not is_http_url(outcome.final_url):
+            # A page the browser could not open ends on its own error page
+            # (chrome-error://chromewebdata/), whose text is not the vendor's.
+            results.append(
+                CaptureResult(
+                    spec.key,
+                    outcome.label,
+                    method,
+                    CaptureStatus.HTTP_ERROR,
+                    "the browser showed an error page",
+                    None,
+                )
             )
             continue
         blocked = _redirect_block(spec, ctx, outcome.final_url)

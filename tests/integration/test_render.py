@@ -169,6 +169,61 @@ document.getElementById("region").addEventListener("change", function (event) {
     assert "region us" in texts["us"]
 
 
+def test_a_hidden_copy_of_a_control_does_not_catch_the_action(
+    site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    # Sites ship a mobile and a desktop copy of a toggle; the hidden one can come first. Every
+    # action must reach the visible copy, which here shows the monthly price.
+    site.add(
+        "/two-copies",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Two copies</title></head>
+<body>
+<div style="display: none">
+<button class="plan-toggle" type="button">Monthly</button>
+<select class="region"><option value="eu">EU</option><option value="us">US</option></select>
+</div>
+<div>
+<button class="plan-toggle" type="button">Monthly</button>
+<select class="region"><option value="eu">EU</option><option value="us">US</option></select>
+</div>
+<p id="out">annual price</p>
+<script>
+var out = document.getElementById("out");
+var copies = document.querySelectorAll(".plan-toggle");
+var hiddenCopy = copies[0], visibleCopy = copies[1];
+hiddenCopy.addEventListener("click", function () { out.textContent = "WRONG hidden copy"; });
+visibleCopy.addEventListener("click", function () { out.textContent = "monthly price"; });
+var regions = document.querySelectorAll(".region");
+regions[0].addEventListener("change", function () { out.textContent = "WRONG hidden region"; });
+regions[1].addEventListener("change", function (event) {
+  out.textContent = "region " + event.target.value;
+});
+</script>
+</body></html>""",
+    )
+    recipe = Recipe(
+        method=Method.RENDER_INTERACT,
+        states=[
+            State(label="by-text", actions=[ClickText(text="Monthly")]),
+            State(label="by-selector", actions=[ClickSelector(selector=".plan-toggle")]),
+            State(label="by-select", actions=[SelectOption(selector=".region", value="us")]),
+        ],
+    )
+    # A short timeout: a click on the hidden copy waits for it to show, and gives up after this.
+    results = render_states(
+        browser.browser,
+        site.url("/two-copies"),
+        recipe,
+        RenderSettings(navigation_timeout_s=3.0),
+        _no_pacing,
+    )
+    texts = {result.label: _rendered(result).visible_text for result in results}
+    assert "monthly price" in texts["by-text"]
+    assert "monthly price" in texts["by-selector"]
+    assert "region us" in texts["by-select"]
+    assert not any("WRONG" in text for text in texts.values())
+
+
 def test_render_finishes_on_never_idle_page(site: LocalSite, browser: LaunchedBrowser) -> None:
     url = serve_page(site, "never-idle")
     settings = RenderSettings(idle_cap_s=2.0)

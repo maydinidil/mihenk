@@ -26,7 +26,7 @@ class SelectOption(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     kind: Literal["select_option"] = "select_option"
     selector: str = Field(min_length=1, max_length=500)
-    value: str
+    value: str = Field(max_length=200)
 
 
 Action = Annotated[ClickText | ClickSelector | SelectOption, Field(discriminator="kind")]
@@ -35,7 +35,7 @@ Action = Annotated[ClickText | ClickSelector | SelectOption, Field(discriminator
 class State(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     label: str
-    actions: list[Action] = Field(default_factory=list)
+    actions: list[Action] = Field(default_factory=list, max_length=20)
 
     @field_validator("label")
     @classmethod
@@ -50,7 +50,7 @@ class State(BaseModel):
 class Recipe(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     method: Method
-    states: list[State] = Field(min_length=1)
+    states: list[State] = Field(min_length=1, max_length=20)
 
     @model_validator(mode="after")
     def _rules(self) -> Recipe:

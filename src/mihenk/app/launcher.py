@@ -22,7 +22,6 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
-from mihenk import cli
 from mihenk.api.routes.smoke import SmokeSignal
 from mihenk.api.security import GuardConfig
 from mihenk.api.server import create_app
@@ -67,12 +66,17 @@ _TOKEN_IN_TEXT = re.compile(r"token=[^&\s'\"#]+")
 
 
 class TokenRedactingFilter(logging.Filter):
-    """Replaces token=<value> with token=<redacted> in a log record's message.
+    """Replaces token=<value> with token=<redacted> in a log record's message and traceback.
 
     pywebview logs the address it loads (Window.load_url, at PYWEBVIEW_LOG=DEBUG), and that
-    address carries the one-time key. The key is in msg or in args depending on how the line
-    was logged, so this looks at the formatted message. A record that cannot be formatted is dropped: the handler
+    address carries the one-time key; an exception that mentions the address carries it into the
+    traceback too. The key is in msg or in args depending on how the line was logged, so this
+    looks at the formatted message. A record that cannot be formatted is dropped: the handler
     would fail on it anyway, and an unchecked message must not reach the file.
+
+    It belongs on the log file's handler (see `open_log_file`), which every logger's records
+    reach. The traceback text is made here, from `exc_info`, when the formatter has not yet
+    made it: the formatter would make it after this filter has run, out of reach.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -84,15 +88,19 @@ class TokenRedactingFilter(logging.Filter):
         if redacted != message:
             record.msg = redacted
             record.args = None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = _TOKEN_IN_TEXT.sub("token=<redacted>", record.exc_text)
         return True
 
 
-_PYWEBVIEW_FILTER = TokenRedactingFilter()
-
-
-def redact_tokens_in_pywebview_log() -> None:
-    """Every pywebview module logs through the "pywebview" logger, so one filter covers them."""
-    logging.getLogger("pywebview").addFilter(_PYWEBVIEW_FILTER)  # a second call adds nothing
+def open_log_file(path: Path) -> logging.Handler:
+    """The handler for mihenk.log: every record written to the file passes the token filter."""
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.addFilter(TokenRedactingFilter())
+    return handler
 
 
 class ServerThread:
@@ -214,6 +222,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # then sys.argv[1:].
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] in _CLI_COMMANDS:
+        # Imported here and not at the top: the command line loads Playwright and httpx2
+        # (about 0.28 s), which opening the window does not need.
+        from mihenk import cli
+
         return cli.main(arguments)
     args = _parse(argv)  # --help and a bad option exit here, as argparse does
     try:
@@ -227,12 +239,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _run(args: argparse.Namespace) -> int:
     data_dir: Path = args.data_dir or default_data_dir()
     logging.basicConfig(
-        filename=logs_dir(data_dir) / "mihenk.log",
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        encoding="utf-8",
+        level=logging.INFO, handlers=[open_log_file(logs_dir(data_dir) / "mihenk.log")]
     )
-    redact_tokens_in_pywebview_log()
     sock = bind_loopback()
     port = int(sock.getsockname()[1])
     token = new_token()

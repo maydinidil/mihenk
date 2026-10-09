@@ -55,17 +55,26 @@ def browsers_dir(data_dir: Path) -> Path:
     return data_dir / "browsers"
 
 
-def has_downloaded_chromium(data_dir: Path) -> bool:
-    """Whether the browsers folder holds a Chromium (`chromium-<revision>`) of any revision.
+# The empty file that Playwright's downloader writes into a browser's folder after it has
+# extracted the whole archive, and that its own registry looks for to tell a finished download
+# from a half one. Checked against Playwright 1.63: `INSTALLATION_COMPLETE` in
+# `playwright/driver/package/lib/coreBundle.js` (the downloader's `browserDirectoryToMarkerFilePath`),
+# and present in a real `chromium-1243` folder.
+_INSTALLATION_COMPLETE = "INSTALLATION_COMPLETE"
 
-    The headless shell (`chromium_headless_shell-*`) does not count. A revision from an older
-    Playwright counts too, so this says that a download was made, not that this Playwright can
-    launch it.
+
+def has_downloaded_chromium(data_dir: Path) -> bool:
+    """Whether the browsers folder holds a finished Chromium (`chromium-<revision>`) download.
+
+    A folder counts only when Playwright marked it complete: a download that stopped half way
+    leaves the folder without the mark. The headless shell (`chromium_headless_shell-*`) does
+    not count. A revision from an older Playwright counts too, so this says that a download was
+    made, not that this Playwright can launch it.
     """
     folder = browsers_dir(data_dir)
     if not folder.is_dir():
         return False
-    return any(path.is_dir() for path in folder.glob("chromium-*"))
+    return any((path / _INSTALLATION_COMPLETE).is_file() for path in folder.glob("chromium-*"))
 
 
 def start_playwright_env(data_dir: Path) -> None:

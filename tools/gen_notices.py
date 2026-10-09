@@ -197,11 +197,22 @@ def build_notices() -> tuple[str, list[str]]:
             missing.append(label)
         sections.append(text)
 
-    names = sorted(set(check_licenses.python_runtime_names()), key=str.lower)
-    for name in names:
+    # A package listed twice is needed if any listing needs it here.
+    needed: dict[str, bool] = {}
+    for requirement in check_licenses.python_runtime_requirements():
+        needed[requirement.name] = needed.get(requirement.name, False) or (
+            check_licenses.needed_here(requirement)
+        )
+    for name in sorted(needed, key=str.lower):
         try:
             dist = metadata.distribution(name)
         except metadata.PackageNotFoundError:
+            if needed[name]:
+                # The same rule as the licence check: only a package for another platform may
+                # be missing. A gap here would ship an app without that package's licence text.
+                raise ValueError(
+                    f"python {name}: not installed, but this platform needs it; run `uv sync`"
+                ) from None
             print(f"skip {name}: not installed on this platform", file=sys.stderr)
             continue
         expression = check_licenses.python_expression(name, overrides) or "unknown"

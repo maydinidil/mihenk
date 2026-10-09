@@ -1,5 +1,7 @@
 import logging
+import re
 import socket
+import subprocess
 import sys
 import threading
 import types
@@ -11,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
+from mihenk import cli
 from mihenk.api.routes.smoke import SmokeSignal
 from mihenk.api.security import TOKEN_HEADER, GuardConfig
 from mihenk.api.server import create_app
@@ -197,30 +200,108 @@ def test_filter_drops_a_record_it_cannot_format() -> None:
     assert launcher.TokenRedactingFilter().filter(_record("%d", ("not a number",))) is False
 
 
+def _raise_and_capture(exc: BaseException) -> tuple[type[BaseException], BaseException, Any]:
+    try:
+        raise exc
+    except BaseException as caught:
+        return type(caught), caught, caught.__traceback__
+
+
+def test_filter_redacts_a_token_in_the_traceback() -> None:
+    record = _record("window failed")
+    record.exc_info = _raise_and_capture(RuntimeError(f"cannot open {URL}"))
+    assert record.exc_text is None  # the formatter has not run yet
+    assert launcher.TokenRedactingFilter().filter(record) is True
+    assert record.exc_text is not None
+    assert "RuntimeError: cannot open" in record.exc_text
+    assert TOKEN not in record.exc_text
+    assert "token=<redacted>" in record.exc_text
+    # What a formatter then writes uses the redacted text, not a fresh one.
+    assert TOKEN not in logging.Formatter("%(message)s").format(record)
+
+
+def test_filter_redacts_a_token_in_a_chained_exception() -> None:
+    try:
+        try:
+            raise OSError(f"refused {URL}")
+        except OSError as inner:
+            raise ValueError("window failed") from inner
+    except ValueError as outer:
+        record = _record("window failed")
+        record.exc_info = (type(outer), outer, outer.__traceback__)
+    assert launcher.TokenRedactingFilter().filter(record) is True
+    assert record.exc_text is not None
+    assert "OSError: refused" in record.exc_text
+    assert TOKEN not in record.exc_text
+
+
+def test_filter_redacts_a_traceback_text_a_formatter_already_made() -> None:
+    record = _record("window failed")
+    record.exc_info = _raise_and_capture(RuntimeError("anything"))
+    record.exc_text = f"Traceback ...\nRuntimeError: cannot open {URL}"
+    assert launcher.TokenRedactingFilter().filter(record) is True
+    assert record.exc_text == (
+        "Traceback ...\nRuntimeError: cannot open http://127.0.0.1:5000/#token=<redacted>&smoke=1"
+    )
+
+
+def test_filter_leaves_a_record_without_a_traceback_without_one() -> None:
+    record = _record("plain")
+    assert launcher.TokenRedactingFilter().filter(record) is True
+    assert record.exc_text is None
+
+
 @pytest.fixture
-def pywebview_logger() -> Iterator[logging.Logger]:
-    logger = logging.getLogger("pywebview")
-    before = list(logger.filters)
-    yield logger
-    logger.filters[:] = before
+def log_file(tmp_path: Path) -> Iterator[Path]:
+    """mihenk.log's handler, as `_run` installs it: on the root logger, so that every logger's
+    records reach it."""
+    path = tmp_path / "mihenk.log"
+    handler = launcher.open_log_file(path)
+    root = logging.getLogger()
+    before = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    yield path
+    root.removeHandler(handler)
+    root.setLevel(before)
+    handler.close()
 
 
-def test_the_pywebview_logger_is_protected_once(pywebview_logger: logging.Logger) -> None:
-    launcher.redact_tokens_in_pywebview_log()
-    launcher.redact_tokens_in_pywebview_log()
-    ours = [f for f in pywebview_logger.filters if isinstance(f, launcher.TokenRedactingFilter)]
-    assert len(ours) == 1
+def test_the_log_file_is_utf8_and_keeps_the_log_format(log_file: Path) -> None:
+    logging.getLogger("mihenk.test").info("Ayşe Yılmaz opened the window")
+    text = log_file.read_text(encoding="utf-8")
+    assert re.fullmatch(
+        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} INFO mihenk\.test Ayşe Yılmaz opened the window\n",
+        text,
+    )
 
 
-def test_a_pywebview_log_line_reaches_the_log_without_the_token(
-    pywebview_logger: logging.Logger, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    "name", ["pywebview", "pywebview.window", "uvicorn.error", "mihenk.app.launcher", "root"]
+)
+def test_a_message_from_any_logger_is_written_without_the_token(log_file: Path, name: str) -> None:
+    logger = logging.getLogger(None if name == "root" else name)
+    logger.warning("Loading %s", URL)
+    logger.warning(f"Loading {URL}")
+    text = log_file.read_text(encoding="utf-8")
+    assert text.count("token=<redacted>") == 2
+    assert TOKEN not in text
+
+
+@pytest.mark.parametrize("name", ["pywebview", "mihenk.app.launcher", "uvicorn.error"])
+def test_a_traceback_from_any_logger_is_written_without_the_token(
+    log_file: Path, name: str
 ) -> None:
-    launcher.redact_tokens_in_pywebview_log()
-    with caplog.at_level(logging.DEBUG, logger="pywebview"):
-        pywebview_logger.debug("Loading %s", URL)
-        pywebview_logger.warning(f"Loading {URL}")
-    assert caplog.text.count("token=<redacted>") == 2
-    assert TOKEN not in caplog.text
+    try:
+        raise RuntimeError(f"cannot open {URL}")
+    except RuntimeError:
+        logging.getLogger(name).exception("window failed")
+    text = log_file.read_text(encoding="utf-8")
+    assert "window failed" in text
+    assert "Traceback (most recent call last)" in text
+    assert "RuntimeError: cannot open" in text
+    assert "token=<redacted>" in text
+    assert TOKEN not in text
 
 
 # --- smoke mode stops waiting when the window is gone -------------------------------------------
@@ -438,15 +519,35 @@ def test_main_creates_the_logs_folder_in_a_data_dir_with_spaces_and_turkish_lett
     assert (data_dir / "logs").is_dir()
 
 
-def test_main_protects_the_pywebview_log_from_the_token(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    servers: _Servers,
-    pywebview_logger: logging.Logger,
+def test_main_writes_mihenk_log_through_the_redacting_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, servers: _Servers
 ) -> None:
+    # pytest keeps its own handlers on the root logger, and basicConfig does nothing then; hide
+    # them so that main sets the logging up as it does when the program starts.
+    root = logging.getLogger()
+    level = root.level
+    monkeypatch.setattr(root, "handlers", [])
     monkeypatch.setattr(launcher, "run_window", lambda url: None)
-    launcher.main(["--data-dir", str(tmp_path / "data")])
-    assert any(isinstance(f, launcher.TokenRedactingFilter) for f in pywebview_logger.filters)
+    try:
+        assert launcher.main(["--data-dir", str(tmp_path / "data")]) == 0
+        (handler,) = root.handlers
+        assert isinstance(handler, logging.FileHandler)
+        assert any(isinstance(f, launcher.TokenRedactingFilter) for f in handler.filters)
+        logging.getLogger("pywebview").warning("Loading %s", URL)
+        try:
+            raise RuntimeError(f"cannot open {URL}")
+        except RuntimeError:
+            logging.getLogger("something.else").exception("failed")
+        handler.flush()
+        text = (logs_dir(tmp_path / "data") / "mihenk.log").read_text(encoding="utf-8")
+    finally:
+        for leftover in list(root.handlers):
+            root.removeHandler(leftover)
+            leftover.close()
+        root.setLevel(level)
+    assert "mihenk started on 127.0.0.1:" in text
+    assert text.count("token=<redacted>") == 2
+    assert TOKEN not in text
 
 
 def test_main_logs_a_server_that_does_not_start_and_returns_1(
@@ -515,7 +616,7 @@ def test_command_line_commands_are_handed_to_the_cli(
     command: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[list[str]] = []
-    monkeypatch.setattr(launcher.cli, "main", lambda argv: seen.append(list(argv)) or 7)
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(list(argv)) or 7)
     monkeypatch.setattr(launcher, "_run", lambda args: pytest.fail("the window must not open"))
     assert launcher.main([command, "http://127.0.0.1/x", "--key", "k"]) == 7
     assert seen == [[command, "http://127.0.0.1/x", "--key", "k"]]
@@ -524,7 +625,7 @@ def test_command_line_commands_are_handed_to_the_cli(
 def test_without_an_argument_the_command_line_is_sys_argv(monkeypatch: pytest.MonkeyPatch) -> None:
     # The console script and `python -m mihenk` call main() with no argument.
     seen: list[list[str]] = []
-    monkeypatch.setattr(launcher.cli, "main", lambda argv: seen.append(list(argv)) or 3)
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(list(argv)) or 3)
     monkeypatch.setattr(sys, "argv", ["mihenk", "capture", "http://127.0.0.1/x"])
     assert launcher.main() == 3
     assert seen == [["capture", "http://127.0.0.1/x"]]
@@ -533,6 +634,48 @@ def test_without_an_argument_the_command_line_is_sys_argv(monkeypatch: pytest.Mo
 def test_window_options_are_not_handed_to_the_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, servers: _Servers
 ) -> None:
-    monkeypatch.setattr(launcher.cli, "main", lambda argv: pytest.fail("not a cli command"))
+    monkeypatch.setattr(cli, "main", lambda argv: pytest.fail("not a cli command"))
     monkeypatch.setattr(launcher, "run_window", lambda url: None)
     assert launcher.main(["--data-dir", str(tmp_path / "data")]) == 0
+
+
+# --- the window does not pay for the command line -----------------------------------------------
+
+
+def test_importing_the_launcher_does_not_load_the_command_line_or_its_libraries() -> None:
+    # `mihenk.cli` loads Playwright and httpx2 (about 0.28 s), which opening the window never
+    # uses. A fresh interpreter, because this process has loaded them already.
+    code = (
+        "import sys; import mihenk.app.launcher; "
+        "print(sorted(m for m in ('playwright', 'httpx2', 'mihenk.cli') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+
+
+def test_a_command_line_command_loads_the_command_line_when_it_is_asked_for() -> None:
+    code = (
+        "import sys; from mihenk.app import launcher; "
+        "assert 'mihenk.cli' not in sys.modules; "
+        "code = launcher.main(['capture', '--help']); "
+        "print(code, 'mihenk.cli' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "0 True"
+    assert "usage: mihenk capture" in result.stdout

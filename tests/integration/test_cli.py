@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from mihenk import cli
+from mihenk.capture.browser import BrowserUnavailable
 from tests.helpers.pages import serve_page
 from tests.helpers.site import LocalSite
 
@@ -107,17 +108,6 @@ def test_robots_blocks_the_page_unless_ignored(
 
 
 @pytest.mark.usefixtures("no_pacing")
-def test_an_address_that_is_not_a_web_page_is_refused_with_exit_1(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    code = cli.main(["capture", "ftp://127.0.0.1/pricing", "--data-dir", str(tmp_path)])
-    ((_, status, detail, _),) = _lines(capsys.readouterr().out)
-    assert code == 1
-    assert status == "http_error"
-    assert detail.startswith("not a valid http(s) URL")
-
-
-@pytest.mark.usefixtures("no_pacing")
 def test_a_snapshot_path_that_is_too_long_is_one_clear_line_and_exit_1(
     site: LocalSite, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -175,7 +165,8 @@ def test_a_robots_txt_redirect_loop_is_paced_on_every_hop(
     assert "/static-table" not in site.hits
     assert len(site.hits) == 6  # robots.txt and five redirects
     gaps = [later - earlier for earlier, later in pairwise(site.hit_times)]
-    assert all(gap >= 0.18 for gap in gaps), gaps
+    # 0.15, not 0.18: a gap seen by the server can fall a few ms short of 0.2 s; no pacing is ~0.
+    assert all(gap >= 0.15 for gap in gaps), gaps
 
 
 def _run_module(*args: str) -> subprocess.CompletedProcess[str]:
@@ -213,27 +204,82 @@ def test_python_dash_m_mihenk_capture_by_fetch_uses_the_real_pace(
     assert site.hit_times[1] - site.hit_times[0] >= 1.9
 
 
-def test_every_state_gets_its_own_line_in_a_child_process(tmp_path: Path) -> None:
-    # The address is refused before any page is requested, so no browser is needed, but the
-    # command still starts its Playwright session for a render method.
-    result = _run_module(
-        "capture",
-        "gopher://127.0.0.1/",
-        "--method",
-        "render_interact",
-        "--state",
-        "annual",
-        "--state",
-        "monthly=Monthly",
-        "--data-dir",
-        str(tmp_path),
+def test_an_address_that_is_not_a_web_page_never_starts_a_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A render method used to start Playwright, and launch Chrome, only to refuse the address.
+    # The full list of refused addresses is in tests/unit/test_cli_options.py.
+    started: list[str] = []
+    monkeypatch.setattr(cli, "sync_playwright", lambda: started.append("playwright"))
+    monkeypatch.setattr(cli, "make_client", lambda locale: started.append("client"))
+    code = cli.main(
+        [
+            "capture",
+            "gopher://127.0.0.1/",
+            "--method",
+            "render_interact",
+            "--state",
+            "annual",
+            "--state",
+            "monthly=Monthly",
+            "--data-dir",
+            str(tmp_path),
+        ]
     )
-    assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "Traceback" not in result.stderr
-    assert [line[:2] for line in _lines(result.stdout)] == [
-        ["annual", "http_error"],
-        ["monthly", "http_error"],
+    captured = capsys.readouterr()
+    assert code == 2
+    assert started == []
+    assert captured.out == ""
+    assert captured.err.startswith("mihenk capture: error: not a valid http(s) URL: ")
+    assert len(captured.err.strip().splitlines()) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_every_state_gets_its_own_line_when_there_is_no_browser(
+    site: LocalSite,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Playwright and the browser are stood in for (a real session cannot start in this process),
+    # and no browser is found: each state is reported, and no request is sent to the site.
+    class Session:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+    def no_browser(pw: object, **kwargs: object) -> object:
+        raise BrowserUnavailable(["chrome", "msedge", "chromium"])
+
+    monkeypatch.setattr(cli, "sync_playwright", Session)
+    monkeypatch.setattr(cli, "launch_browser", no_browser)
+    code = cli.main(
+        [
+            "capture",
+            site.url("/pricing"),
+            "--method",
+            "render_interact",
+            "--state",
+            "annual",
+            "--state",
+            "monthly=Monthly",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert [line[:2] for line in _lines(captured.out)] == [
+        ["annual", "browser_unavailable"],
+        ["monthly", "browser_unavailable"],
     ]
+    assert all(
+        'run "mihenk install-browser" to download Chromium' in line[2]
+        for line in _lines(captured.out)
+    )
+    assert site.hits == []
 
 
 @pytest.mark.browser

@@ -56,6 +56,131 @@ def test_localhost_and_numeric_hosts_still_resolve() -> None:
     assert socket.getaddrinfo("192.0.2.1", 80, type=socket.SOCK_STREAM)
 
 
+# --- the other ways a name or an address can leave the machine ---------------------------------
+# 93.184.216.34 is a public address and 192.0.2.1 a documentation address (RFC 5737); .invalid
+# never resolves. Nothing here may reach the network: each call must be refused by the guard.
+
+
+def test_gethostbyname_is_blocked_for_anything_but_loopback(expect_blocked_network: None) -> None:
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyname("no-such-host.invalid")
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyname("93.184.216.34")
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyname(b"no-such-host.invalid")  # type: ignore[arg-type]
+
+
+def test_gethostbyname_still_resolves_loopback() -> None:
+    assert socket.gethostbyname("localhost") == "127.0.0.1"
+    assert socket.gethostbyname("LOCALHOST") == "127.0.0.1"
+    assert socket.gethostbyname("127.0.0.1") == "127.0.0.1"
+
+
+def test_gethostbyname_ex_is_blocked_for_anything_but_loopback(
+    expect_blocked_network: None,
+) -> None:
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyname_ex("no-such-host.invalid")
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyname_ex("93.184.216.34")
+
+
+def test_gethostbyname_ex_still_resolves_loopback() -> None:
+    assert "127.0.0.1" in socket.gethostbyname_ex("localhost")[2]
+    assert socket.gethostbyname_ex("127.0.0.1")[2] == ["127.0.0.1"]
+
+
+def test_gethostbyaddr_is_blocked_for_anything_but_loopback(expect_blocked_network: None) -> None:
+    # A reverse lookup of a public address sends a PTR query.
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyaddr("93.184.216.34")
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyaddr("2001:db8::1")
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.gethostbyaddr("no-such-host.invalid")
+
+
+def test_gethostbyaddr_still_answers_for_loopback() -> None:
+    assert socket.gethostbyaddr("127.0.0.1")
+    assert socket.gethostbyaddr("localhost")
+
+
+def test_getnameinfo_is_blocked_for_anything_but_loopback(expect_blocked_network: None) -> None:
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.getnameinfo(("93.184.216.34", 80), 0)
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.getnameinfo(("2001:db8::1", 80, 0, 0), 0)
+    with pytest.raises(RuntimeError, match="tried to look up"):
+        socket.getnameinfo(("no-such-host.invalid", 80), 0)
+
+
+def test_getnameinfo_still_answers_for_loopback() -> None:
+    host, service = socket.getnameinfo(
+        ("127.0.0.1", 80), socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+    )
+    assert (host, service) == ("127.0.0.1", "80")
+
+
+def test_udp_sendto_is_blocked_for_anything_but_loopback(expect_blocked_network: None) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        with pytest.raises(RuntimeError, match="tried to reach"):
+            sock.sendto(b"x", ("192.0.2.1", 53))
+        with pytest.raises(RuntimeError, match="tried to reach"):
+            sock.sendto(b"x", 0, ("192.0.2.1", 53))  # the form with flags
+        with pytest.raises(RuntimeError, match="tried to reach"):
+            sock.sendto(b"x", ("no-such-host.invalid", 53))
+    with (
+        socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock6,
+        pytest.raises(RuntimeError, match="tried to reach"),
+    ):
+        sock6.sendto(b"x", ("2001:db8::1", 53, 0, 0))
+
+
+def test_udp_sendto_still_reaches_loopback() -> None:
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver,
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender,
+    ):
+        receiver.bind(("127.0.0.1", 0))
+        receiver.settimeout(5)
+        port = receiver.getsockname()[1]
+        sender.sendto(b"one", ("127.0.0.1", port))
+        sender.sendto(b"two", 0, ("localhost", port))
+        assert receiver.recvfrom(16)[0] == b"one"
+        assert receiver.recvfrom(16)[0] == b"two"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the IOCP proactor is Windows' event loop")
+def test_asyncio_udp_datagrams_are_blocked_for_anything_but_loopback(
+    expect_blocked_network: None,
+) -> None:
+    # Windows' asyncio sends datagrams through the proactor (WSASendTo), not socket.sendto.
+    async def attempt() -> None:
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0)
+        )
+        try:
+            transport.sendto(b"x", ("192.0.2.1", 53))
+            await asyncio.sleep(0.5)  # the send runs on the loop; an error is reported there
+        finally:
+            transport.close()
+
+    errors: list[str] = []
+
+    def run() -> None:
+        loop = asyncio.new_event_loop()
+        loop.set_exception_handler(lambda _loop, context: errors.append(str(context)))
+        try:
+            loop.run_until_complete(attempt())
+        finally:
+            loop.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(run).result()
+    assert any("tried to reach" in error for error in errors), errors
+
+
 @pytest.fixture(scope="session")
 def session_scope_attempt() -> str:
     """Runs before any function-scoped fixture, as the session's `pw` and `browser` do."""

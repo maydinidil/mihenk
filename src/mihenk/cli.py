@@ -2,8 +2,8 @@
 
 It runs the same capture code as a run will, without the window, the server or an LLM. Output is
 one line per state: label, status, detail and the snapshot folder, separated by tabs. The exit
-code is 0 when every state was captured, 1 when any was not or the capture itself failed, and 2
-when the command line or the http client set-up is wrong.
+code is 0 when every state was captured, 1 when any was not or the capture itself failed, 2 when
+the command line (the URL included) or the http client set-up is wrong, and 130 after Ctrl+C.
 
 `mihenk install-browser` downloads Playwright's own Chromium into the data folder, after asking
 (design §17). `mihenk _playwright-install` is not for people: it is how that download reaches
@@ -25,14 +25,15 @@ from urllib.parse import urlsplit
 
 import httpx2 as http
 from playwright.__main__ import main as playwright_main
+from playwright.sync_api import Browser, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
 from pydantic import ValidationError
 
 from mihenk.app.paths import default_data_dir
 from mihenk.capture.browser import (
     BrowserUnavailable,
     browsers_dir,
+    has_downloaded_chromium,
     install_chromium,
     launch_browser,
     start_playwright_env,
@@ -43,7 +44,7 @@ from mihenk.capture.pace import Pace, host_key, idna_host
 from mihenk.capture.recipe import Recipe, State
 from mihenk.capture.render import RenderSettings
 from mihenk.capture.robots import RobotsFetch, RobotsGate
-from mihenk.capture.run import CaptureResult, PageSpec, RunContext, capture_page
+from mihenk.capture.run import CaptureResult, PageSpec, RunContext, capture_page, is_http_url
 from mihenk.capture.snapshot import new_run_id
 
 # Requests to one site are at least this far apart (design §8.2).
@@ -207,25 +208,33 @@ def _result_line(result: CaptureResult) -> str:
     return "\t".join((result.state_label, result.status.value, _one_line(result.detail), folder))
 
 
+def _close_quietly(browser: Browser) -> None:
+    with contextlib.suppress(PlaywrightError):
+        browser.close()
+
+
 def _capture_in_browser(spec: PageSpec, ctx: RunContext, data_dir: Path) -> list[CaptureResult]:
     """Starts Playwright for a render method, captures, and always closes the browser.
 
     An installed Chrome or Edge is used first, then a Chromium downloaded into the data folder
     (`mihenk install-browser`). No browser at all is a result (`browser_unavailable` per state),
-    not an error.
+    not an error. After Ctrl+C nothing is closed: Playwright's sync calls hang while the
+    interrupt is in flight, and its driver process exits with this one.
     """
     start_playwright_env(data_dir)  # before the session starts: its driver reads this once
-    with sync_playwright() as pw:
+    with contextlib.ExitStack() as cleanup:
+        pw = cleanup.enter_context(sync_playwright())
         try:
-            launched = launch_browser(pw, allow_downloaded=True)
-        except BrowserUnavailable:
-            return capture_page(spec, ctx)
-        try:
+            try:
+                launched = launch_browser(pw, allow_downloaded=True)
+            except BrowserUnavailable:
+                return capture_page(spec, ctx)
+            cleanup.callback(_close_quietly, launched.browser)
             ctx.browser = launched.browser
             return capture_page(spec, ctx)
-        finally:
-            with contextlib.suppress(PlaywrightError):
-                launched.browser.close()
+        except KeyboardInterrupt:
+            cleanup.pop_all()  # drop the cleanup, unrun
+            raise
 
 
 def _capture(args: argparse.Namespace) -> int:
@@ -233,6 +242,10 @@ def _capture(args: argparse.Namespace) -> int:
         recipe = _build_recipe(args.method, args.state)
     except ValueError as exc:
         _emit(sys.stderr, f"mihenk capture: error: {exc}")
+        return 2
+    if not is_http_url(args.url):
+        # Before Playwright or an http client starts: a render run would open a browser for it.
+        _emit(sys.stderr, f"mihenk capture: error: not a valid http(s) URL: {args.url[:200]!r}")
         return 2
     data_dir: Path = args.data_dir or default_data_dir()
     country: str = args.country or region_from_locale(system_locale_name())
@@ -337,8 +350,24 @@ def _install_browser(args: argparse.Namespace) -> int:
     if code != 0:
         _emit(sys.stderr, f"mihenk install-browser: failed: the download ended with code {code}")
         return 1
+    if not has_downloaded_chromium(data_dir):
+        # An exit code of 0 is not proof: only a Chromium that Playwright marked complete counts.
+        _emit(
+            sys.stderr,
+            "mihenk install-browser: failed: the download did not finish "
+            f"(no complete Chromium in {folder})",
+        )
+        return 1
     _emit(sys.stdout, "Done. mihenk uses it when Chrome and Edge are not installed.")
     return 0
+
+
+# The only command lines mihenk needs from Playwright's own: the Chromium download, and its version
+# (a check that the bundled driver runs). Anything else is refused: a bare `install`, for one,
+# would fill Playwright's global cache with every browser.
+_PLAYWRIGHT_COMMANDS = frozenset(
+    {("install", "chromium"), ("install", "chromium", "--no-shell"), ("--version",)}
+)
 
 
 def _playwright_install(rest: Sequence[str]) -> int:
@@ -346,6 +375,13 @@ def _playwright_install(rest: Sequence[str]) -> int:
 
     Playwright's `main()` reads `sys.argv[1:]` and always ends in `sys.exit(code)`.
     """
+    if tuple(rest) not in _PLAYWRIGHT_COMMANDS:
+        _emit(
+            sys.stderr,
+            "mihenk _playwright-install: error: only 'install chromium [--no-shell]' "
+            "and '--version' are accepted",
+        )
+        return 2
     saved = sys.argv
     sys.argv = ["playwright", *rest]
     try:
@@ -358,6 +394,15 @@ def _playwright_install(rest: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str]) -> int:
+    try:
+        return _run_command(argv)
+    except KeyboardInterrupt:
+        # Ctrl+C: no traceback, and no Playwright cleanup (see _capture_in_browser).
+        _emit(sys.stderr, "Stopped.")
+        return 130
+
+
+def _run_command(argv: Sequence[str]) -> int:
     if argv and argv[0] == "_playwright-install":
         # Not an argparse command: the rest of the line belongs to Playwright, whose options
         # (--no-shell and the like) argparse would refuse, and it stays out of --help.

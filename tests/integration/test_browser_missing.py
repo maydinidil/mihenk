@@ -1,17 +1,24 @@
+from typing import Any
+
 import pytest
-from playwright.sync_api import Error as PlaywrightError
+
+from mihenk.capture import browser as browser_module
+from mihenk.capture.browser import BrowserUnavailable, launch_browser
 
 
-def test_missing_branded_browser_message_is_pinned(pw) -> None:  # type: ignore[no-untyped-def]
+def test_a_missing_branded_browser_is_reported_as_unavailable(
+    pw: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """launch_browser tells "not installed" from other failures by Playwright's wording.
 
-    The wording is not documented API, so this fails loudly the day Playwright changes it.
+    The wording is not documented API. This runs the real classifier against the real driver, so
+    it fails loudly (a PlaywrightError escapes) the day Playwright changes the message.
     """
+    monkeypatch.setattr(browser_module, "CHANNEL_ORDER", ("chrome-canary",))
     try:
-        launched = pw.chromium.launch(channel="chrome-canary", headless=True)
-    except PlaywrightError as exc:
-        message = str(exc)
-        assert "is not found at" in message or "Executable doesn't exist" in message
+        launched = launch_browser(pw)
+    except BrowserUnavailable as exc:
+        assert exc.tried == ("chrome-canary",)
     else:
-        launched.close()
+        launched.browser.close()
         pytest.skip("Chrome Canary is installed here, so there is no missing-browser message")

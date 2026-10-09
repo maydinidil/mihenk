@@ -14,7 +14,7 @@ on both systems, an Inno Setup installer on Windows and a disk image on macOS.
 |---|---|
 | `packaging/mihenk.spec` | The PyInstaller spec. Onedir, windowed, no UPX. It bundles the built screens, `LICENSE`, `NOTICE`, `EVALUATION.md` and `THIRD_PARTY_NOTICES.txt`. It leaves out the Qt, GTK and Tk libraries, so pywebview can only pick the Windows or macOS backend. It also leaves out `mypy`, `mypy_extensions`, `pydantic.mypy` and `setuptools`: `pydantic.mypy` pulled in the dev-only type checker and cffi's build shim pulled in setuptools, neither runs in the app, and neither was in the notices. That exclusion is the one change from the spec the task gave. On macOS it also wraps the folder in `mihenk.app`. |
 | `packaging/windows/mihenk.iss` | The Inno Setup 6 script. Per-user install under `%LOCALAPPDATA%\Programs\mihenk`, no administrator rights. It installs Microsoft WebView2 first when the machine has none. |
-| `packaging/macos/make_dmg.sh` | One `hdiutil create` call that turns `dist/mihenk.app` into `dist/mihenk-<version>-macos-arm64.dmg`. |
+| `packaging/macos/make_dmg.sh` | Copies `dist/mihenk.app` into a temporary staging folder next to an `Applications` link, then one `hdiutil create` call turns that folder into `dist/mihenk-<version>-macos-arm64.dmg`. The mounted disk shows the app and the folder to drag it onto. |
 | `tools/gen_notices.py` | One new part: the licence text of the Python runtime (PSF-2.0), because the frozen app embeds CPython. See below. |
 | `pyproject.toml`, `uv.lock` | Two Windows-only pins, `pythonnet==3.2.1` and `clr_loader==0.3.1`. See below. |
 
@@ -53,6 +53,19 @@ The frozen app carries its own CPython, and `THIRD_PARTY_NOTICES.txt` had no sec
 generator prints a WARNING like it does for every other part. Unix builds keep the file in the
 standard library folder, so the generator looks there too. That Unix path is covered by a unit
 test but has not run on a real macOS build.
+
+### Known gaps in the notices
+
+`gen_notices.py` prints a WARNING for each part that has no licence file and still exits 0.
+`gen_notices.py --strict` exits 1 instead; use it once the gaps below are closed. Each gap waits
+for Aydin, because closing it means getting a licence text from outside this machine, and
+nothing is fetched here.
+
+| Part | Missing | Detail |
+|---|---|---|
+| `webview/lib` (in the pywebview wheel) | The Microsoft WebView2 SDK licence | The folder holds the SDK files and no licence file. |
+| `proxy-tools` (a pywebview dependency) | Its licence file | The metadata says MIT, the package ships no licence file. |
+| OpenSSL 3.5.6 in the frozen Windows app (`libcrypto-3-x64.dll`, `libssl-3-x64.dll`) and libffi (`libffi-8.dll`) | Their licence texts | These three DLLs come from the Python install the build ran with. The Python runtime licence already in the notices (`LICENSE.txt`) names neither of them, and the Python install has no licence file for either. OpenSSL 3.x is Apache-2.0 and libffi has an MIT-style licence; their texts and copyright lines come with their source releases. |
 
 ## What is pending CI
 

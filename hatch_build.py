@@ -20,6 +20,7 @@ class WebBuildHook(BuildHookInterface):  # type: ignore[misc]
             return  # uv sync installs the project this way and never needs the screens or notices
         if os.environ.get("MIHENK_SKIP_WEB_BUILD") != "1":
             self._build_screens()
+        self._require_screens()  # also after a skipped build: the wheel must not ship without them
         notices = Path(self.root) / "THIRD_PARTY_NOTICES.txt"
         if not notices.is_file():
             raise RuntimeError("run tools/gen_notices.py before building a wheel")
@@ -32,6 +33,8 @@ class WebBuildHook(BuildHookInterface):  # type: ignore[misc]
         web = Path(self.root) / "web"
         subprocess.run([npm, "ci"], cwd=web, check=True)
         subprocess.run([npm, "run", "build"], cwd=web, check=True)
+
+    def _require_screens(self) -> None:
         index = Path(self.root) / "src" / "mihenk" / "web_dist" / "index.html"
         if not index.is_file():
             raise RuntimeError("the screens build produced no index.html")

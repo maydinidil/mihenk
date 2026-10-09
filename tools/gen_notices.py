@@ -16,13 +16,21 @@ Everything is read from what is already installed; nothing is fetched. The wheel
 
 from __future__ import annotations
 
+import argparse
 import json
 import platform
 import re
 import sys
+from collections.abc import Sequence
 from importlib import metadata
 from itertools import pairwise
 from pathlib import Path
+
+try:
+    from tools import check_licenses
+except ModuleNotFoundError:
+    # Run as a script (python tools/gen_notices.py): only tools/ is on sys.path, not the root.
+    import check_licenses
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "THIRD_PARTY_NOTICES.txt"
@@ -43,8 +51,13 @@ def _is_notice_name(name: str) -> bool:
 
 
 def _read(path: Path) -> str:
-    text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
-    return text.strip("\n").rstrip()
+    """The file's text, which must be UTF-8: a licence is never silently reproduced with
+    replacement characters."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{path} is not UTF-8 text (byte {exc.start}: {exc.reason})") from exc
+    return text.replace("\r\n", "\n").strip("\n").rstrip()
 
 
 def _heading(title: str) -> str:
@@ -170,10 +183,6 @@ def _npm_notice(name: str) -> str:
 
 def build_notices() -> tuple[str, list[str]]:
     """The whole file's text, and a list of the parts that had no licence file to reproduce."""
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))  # run as a script, only tools/ is on the path
-    from tools import check_licenses
-
     overrides = check_licenses.load_overrides()
     missing: list[str] = []
     sections: list[str] = [
@@ -188,14 +197,14 @@ def build_notices() -> tuple[str, list[str]]:
             missing.append(label)
         sections.append(text)
 
-    names = sorted(set(check_licenses._python_runtime_names()), key=str.lower)
+    names = sorted(set(check_licenses.python_runtime_names()), key=str.lower)
     for name in names:
         try:
             dist = metadata.distribution(name)
         except metadata.PackageNotFoundError:
             print(f"skip {name}: not installed on this platform", file=sys.stderr)
             continue
-        expression = check_licenses._python_expression(name, overrides) or "unknown"
+        expression = check_licenses.python_expression(name, overrides) or "unknown"
         # The playwright and pywebview folders that parts 2 and 3 reproduce are left out here.
         skip = {"playwright": ("playwright/driver/",), "pywebview": ("webview/lib/",)}
         add(f"python {name}", distribution_notice(dist, expression, skip.get(name.lower(), ())))
@@ -226,13 +235,24 @@ def build_notices() -> tuple[str, list[str]]:
     return "\n\n\n".join(sections) + "\n", missing
 
 
-def main() -> int:
-    text, missing = build_notices()
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Write THIRD_PARTY_NOTICES.txt.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 when any part has no licence file (the default is to warn and exit 0)",
+    )
+    args = parser.parse_args(argv)
+    try:
+        text, missing = build_notices()
+    except ValueError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 1
     OUTPUT.write_text(text, encoding="utf-8", newline="\n")
     print(f"wrote {OUTPUT.name}: {len(text.splitlines())} lines")
     for label in missing:
         print(f"WARNING no licence file found for {label}", file=sys.stderr)
-    return 0
+    return 1 if args.strict and missing else 0
 
 
 if __name__ == "__main__":

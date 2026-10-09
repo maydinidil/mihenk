@@ -1,4 +1,5 @@
-"""Shared fixtures. Every test runs behind a guard that allows loopback connections only."""
+"""Shared fixtures. The whole test session, session-scoped fixtures included, runs behind a guard
+that allows loopback connections only and refuses to look up any other host name."""
 
 from __future__ import annotations
 
@@ -15,10 +16,37 @@ from tests.helpers.site import LocalSite
 
 _real_connect = socket.socket.connect
 _real_connect_ex = socket.socket.connect_ex
+_real_getaddrinfo = socket.getaddrinfo
 
 
 class NetworkBlocked(RuntimeError):
     pass
+
+
+class _Attempts:
+    """Every attempt the guard blocked, in order.
+
+    Code under test can swallow `NetworkBlocked` with a broad `except Exception` and still pass,
+    so each test also fails at teardown when an attempt happened during it.
+    """
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._reported = 0
+
+    def block(self, message: str) -> NetworkBlocked:
+        self._messages.append(message)
+        return NetworkBlocked(message)
+
+    def take(self) -> list[str]:
+        """The attempts since the last call (session fixtures count toward the next test)."""
+        fresh = self._messages[self._reported :]
+        self._reported = len(self._messages)
+        return fresh
+
+
+_attempts = _Attempts()
+_EXPECTED = pytest.StashKey[bool]()
 
 
 def _check(sock: socket.socket, address: Any) -> None:
@@ -28,9 +56,27 @@ def _check(sock: socket.socket, address: Any) -> None:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        raise NetworkBlocked(f"a test tried to reach {host!r}") from None
+        raise _attempts.block(f"a test tried to reach {host!r}") from None
     if not ip.is_loopback:
-        raise NetworkBlocked(f"a test tried to reach {host}")
+        raise _attempts.block(f"a test tried to reach {host}")
+
+
+def _check_resolvable(host: Any) -> None:
+    """Only IP literals and `localhost` may be looked up: any other name sends a DNS query."""
+    if host is None or host == "":
+        return
+    name = host.decode("ascii", "replace") if isinstance(host, bytes) else str(host)
+    if name.lower() == "localhost":
+        return
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        raise _attempts.block(f"a test tried to resolve {name!r}") from None
+
+
+def _guarded_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+    _check_resolvable(host)
+    return _real_getaddrinfo(host, *args, **kwargs)
 
 
 def _guarded_connect(self: socket.socket, address: Any) -> None:
@@ -55,12 +101,39 @@ if sys.platform == "win32":
         return _real_proactor_connect(self, conn, address)
 
 
-@pytest.fixture(autouse=True)
-def _loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
-    monkeypatch.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
+def pytest_configure(config: pytest.Config) -> None:
+    """Install the guard once for the whole run.
+
+    The session-scoped fixtures (`pw`, `browser`) are set up before any function-scoped fixture,
+    so a per-test guard would leave them unguarded.
+    """
+    patches = pytest.MonkeyPatch()
+    config.add_cleanup(patches.undo)
+    patches.setattr(socket, "getaddrinfo", _guarded_getaddrinfo)
+    patches.setattr(socket.socket, "connect", _guarded_connect)
+    patches.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
     if sys.platform == "win32":
-        monkeypatch.setattr(IocpProactor, "connect", _guarded_proactor_connect)
+        patches.setattr(IocpProactor, "connect", _guarded_proactor_connect)
+
+
+@pytest.fixture(autouse=True)
+def _loopback_only(request: pytest.FixtureRequest) -> Iterator[None]:
+    yield
+    blocked = _attempts.take()
+    if blocked and not request.node.stash.get(_EXPECTED, False):
+        pytest.fail(
+            "the network guard blocked an attempt that the test did not declare, so the error "
+            "may have been swallowed (a broad `except Exception`). Fix the code, or add the "
+            "`expect_blocked_network` fixture if the test blocks it on purpose: "
+            + "; ".join(blocked),
+            pytrace=False,
+        )
+
+
+@pytest.fixture
+def expect_blocked_network(request: pytest.FixtureRequest) -> None:
+    """Declare that this test blocks network attempts on purpose (the guard's own tests)."""
+    request.node.stash[_EXPECTED] = True
 
 
 @pytest.fixture

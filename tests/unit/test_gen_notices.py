@@ -1,6 +1,11 @@
+import json
+import shutil
 from importlib import metadata
 from pathlib import Path
 
+import pytest
+
+from tools import check_licenses, gen_notices
 from tools.gen_notices import (
     bootloader_exception_section,
     distribution_notice,
@@ -168,3 +173,158 @@ def test_python_runtime_notice_finds_the_licence_in_the_unix_standard_library_fo
     stdlib.mkdir(parents=True)
     (stdlib / "LICENSE.txt").write_text(PSF_TEXT, encoding="utf-8")
     assert PSF_TEXT in python_runtime_notice(tmp_path, "3.13.13")
+
+
+# --- reading licence files -------------------------------------------------------------------
+
+
+def test_a_licence_file_that_is_not_utf8_is_an_error_that_names_the_file(tmp_path: Path) -> None:
+    (tmp_path / "LICENSE").write_bytes("Copyright © 2026".encode("latin-1"))
+    with pytest.raises(ValueError, match="LICENSE") as error:
+        folder_notice("Latin-1 licence", tmp_path)
+    assert str(tmp_path) in str(error.value)
+    assert "not UTF-8" in str(error.value)
+
+
+def test_a_utf8_licence_file_with_windows_line_endings_still_reads(tmp_path: Path) -> None:
+    (tmp_path / "LICENSE").write_bytes("Line one\r\nLine two, with a © sign\r\n".encode())
+    text = folder_notice("Windows licence", tmp_path)
+    assert "Line one\nLine two, with a © sign" in text
+
+
+# --- the whole file, built from fake inputs ---------------------------------------------------
+
+
+def _dist(root: Path, name: str, version: str, files: dict[str, str] | None = None) -> None:
+    """A fake installed distribution; `files` maps a path under `root` to its text."""
+    info = root / f"{name}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\nLicense-Expression: MIT\n",
+        encoding="utf-8",
+    )
+    records = [f"{info.name}/METADATA,,"]
+    for relative, text in (files or {}).items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        records.append(f"{relative},,")
+    (info / "RECORD").write_text("\n".join(records) + "\n", encoding="utf-8")
+
+
+class Env:
+    def __init__(self, site: Path, root: Path) -> None:
+        self.site = site
+        self.root = root
+
+
+@pytest.fixture
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
+    """Every input of build_notices faked, with a licence file for every part (no gaps)."""
+    site = tmp_path / "site"
+    site.mkdir()
+    monkeypatch.syspath_prepend(str(site))
+    _dist(site, "fakepkg", "1.2.3", {"fakepkg-1.2.3.dist-info/licenses/LICENSE": MIT_TEXT})
+    _dist(site, "playwright", "9.9", {"playwright/driver/LICENSE": "Node licence text"})
+    _dist(site, "pywebview", "9.8", {"webview/lib/LICENSE": "WebView2 SDK licence text"})
+    _dist(
+        site, "pyinstaller", "9.7", {"pyinstaller-9.7.dist-info/COPYING.txt": PYINSTALLER_COPYING}
+    )
+    root = tmp_path / "repo"
+    npm = root / "web" / "node_modules" / "fakenpm"
+    npm.mkdir(parents=True)
+    (npm / "package.json").write_text(
+        json.dumps({"name": "fakenpm", "version": "4.5.6", "license": "ISC"}), encoding="utf-8"
+    )
+    (npm / "LICENSE").write_text("Fake npm licence text", encoding="utf-8")
+    monkeypatch.setattr(gen_notices, "ROOT", root)
+    monkeypatch.setattr(gen_notices, "OUTPUT", root / "THIRD_PARTY_NOTICES.txt")
+    monkeypatch.setattr(check_licenses, "load_overrides", dict)
+    monkeypatch.setattr(check_licenses, "python_runtime_names", lambda: ["fakepkg"])
+    monkeypatch.setattr(check_licenses, "npm_runtime_packages", lambda: ["fakenpm"])
+    monkeypatch.setattr(
+        gen_notices,
+        "python_runtime_notice",
+        lambda prefix, version: f"Python {version} (PSF-2.0)\n{PSF_TEXT}",
+    )
+    return Env(site, root)
+
+
+def test_build_notices_reproduces_every_part_in_order(env: Env) -> None:
+    text, missing = gen_notices.build_notices()
+    assert missing == []
+    in_order = [
+        "THIRD-PARTY NOTICES for mihenk",
+        "fakepkg 1.2.3 (MIT)",
+        MIT_TEXT,
+        "playwright 9.9 driver",
+        "Node licence text",
+        "pywebview 9.8 webview/lib",
+        "WebView2 SDK licence text",
+        "PyInstaller 9.7 (GPL-2.0-or-later WITH Bootloader-exception)",
+        "unlimited permission to link or embed",
+        "Python 3.",
+        PSF_TEXT,
+        "fakenpm 4.5.6 (ISC)",
+        "Fake npm licence text",
+    ]
+    positions = [text.index(piece) for piece in in_order]
+    assert positions == sorted(positions)
+    assert "must not be repeated" not in text  # only PyInstaller's bootloader section
+
+
+def test_build_notices_lists_the_parts_without_a_licence_file(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shutil.rmtree(env.site / "webview")
+    _dist(env.site, "barepkg", "0.1")
+    monkeypatch.setattr(check_licenses, "python_runtime_names", lambda: ["fakepkg", "barepkg"])
+    text, missing = gen_notices.build_notices()
+    assert missing == ["python barepkg", "webview/lib"]
+    assert text.count(gen_notices.NO_LICENCE_FILE) == 2
+
+
+def test_build_notices_skips_a_package_missing_on_this_platform(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(check_licenses, "python_runtime_names", lambda: ["fakepkg", "zzghost"])
+    text, missing = gen_notices.build_notices()
+    assert "zzghost" not in text
+    assert missing == []
+    assert "skip zzghost: not installed on this platform" in capsys.readouterr().err
+
+
+def test_main_writes_the_file_and_exits_zero_even_with_a_gap(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shutil.rmtree(env.site / "webview")
+    assert gen_notices.main([]) == 0
+    written = (env.root / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
+    assert "fakepkg 1.2.3 (MIT)" in written
+    captured = capsys.readouterr()
+    assert "wrote THIRD_PARTY_NOTICES.txt" in captured.out
+    assert "WARNING no licence file found for webview/lib" in captured.err
+
+
+def test_main_strict_exits_one_on_a_gap_but_still_writes_the_file(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shutil.rmtree(env.site / "webview")
+    assert gen_notices.main(["--strict"]) == 1
+    assert (env.root / "THIRD_PARTY_NOTICES.txt").is_file()
+    assert "WARNING no licence file found for webview/lib" in capsys.readouterr().err
+
+
+def test_main_strict_exits_zero_when_every_part_has_a_licence(env: Env) -> None:
+    assert gen_notices.main(["--strict"]) == 0
+
+
+def test_main_reports_a_licence_file_that_is_not_utf8_and_writes_nothing(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (env.site / "playwright" / "driver" / "LICENSE").write_bytes("© Node".encode("latin-1"))
+    assert gen_notices.main([]) == 1
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert str(Path("playwright") / "driver" / "LICENSE") in err
+    assert not (env.root / "THIRD_PARTY_NOTICES.txt").exists()

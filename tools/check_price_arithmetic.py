@@ -27,6 +27,9 @@ PRICE_FIELDS = frozenset(
 )
 EXEMPT = frozenset({Path("src/mihenk/verify/checks.py")})
 _ARITH = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+# Calls whose result is text, and the calls that read a field by its name.
+_TEXT_CALLS = frozenset({"str", "repr", "format", "ascii"})
+_LOOKUPS = frozenset({"get", "pop", "setdefault", "getattr"})
 
 
 def _camel(name: str) -> str:
@@ -141,27 +144,78 @@ class Violation:
     field: str
 
 
+def _str_value(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_text(node: ast.AST) -> bool:
+    """Whether the expression is text: a string, an f-string, a `str()`-style call, or `+` / `%`
+    that builds one."""
+    if isinstance(node, ast.JoinedStr) or _str_value(node) is not None:
+        return True
+    if isinstance(node, ast.BinOp):
+        return _builds_text(node)
+    if isinstance(node, ast.Call):
+        func = node.func
+        return (isinstance(func, ast.Name) and func.id in _TEXT_CALLS) or (
+            isinstance(func, ast.Attribute) and func.attr == "format"
+        )
+    return False
+
+
+def _builds_text(node: ast.BinOp) -> bool:
+    """`"a" + x` is concatenation and `"%s" % x` is formatting, not arithmetic."""
+    if isinstance(node.op, ast.Add):
+        return _is_text(node.left) or _is_text(node.right)
+    if isinstance(node.op, ast.Mod):
+        return _is_text(node.left)
+    return False
+
+
 def _names(node: ast.AST) -> set[str]:
-    if isinstance(node, ast.Name):
-        return {node.id}
-    if isinstance(node, ast.Attribute):
-        return {node.attr}
-    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
-        value = node.slice.value
-        return {value} if isinstance(value, str) else set()
-    return set()
+    """Every name that appears anywhere in the operand: variables, attributes, `x["name"]`,
+    `x.get("name")` and `getattr(x, "name")`."""
+    found: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            found.add(child.id)
+        elif isinstance(child, ast.Attribute):
+            found.add(child.attr)
+        elif isinstance(child, ast.Subscript):
+            if (key := _str_value(child.slice)) is not None:
+                found.add(key)
+        elif isinstance(child, ast.Call) and _is_lookup(child):
+            keys = (_str_value(arg) for arg in child.args[:2])
+            found.update(key for key in keys if key is not None)
+    return found
+
+
+def _is_lookup(call: ast.Call) -> bool:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr in _LOOKUPS
+    return isinstance(func, ast.Name) and func.id in _LOOKUPS
 
 
 def python_violations(path: Path, source: str) -> list[Violation]:
     found: list[Violation] = []
     for node in ast.walk(ast.parse(source, filename=str(path))):
         hits: set[str] = set()
-        if isinstance(node, ast.BinOp) and isinstance(node.op, _ARITH):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, _ARITH) and not _builds_text(node):
             hits = (_names(node.left) | _names(node.right)) & PRICE_FIELDS
-        elif isinstance(node, ast.AugAssign) and isinstance(node.op, _ARITH):
+        elif (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, _ARITH)
+            and not (isinstance(node.op, ast.Add) and _is_text(node.value))
+        ):
             hits = (_names(node.target) | _names(node.value)) & PRICE_FIELDS
-        found.extend(Violation(path, node.lineno, name) for name in sorted(hits))
-    return found
+        for name in sorted(hits):
+            violation = Violation(path, node.lineno, name)
+            if violation not in found:
+                found.append(violation)
+    return sorted(found, key=lambda v: (v.line, v.field))
 
 
 def typescript_violations(path: Path, source: str) -> list[Violation]:

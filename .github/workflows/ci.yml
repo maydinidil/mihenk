@@ -10,10 +10,10 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same ref makes the older run pointless.
+# Pull requests: a newer push to the branch cancels the older run. Pushes: the group includes the
+# commit, so every pushed commit keeps its own run and result.
 concurrency:
-  group: ci-${{ github.ref }}
-  # Cancel superseded runs on pull requests only; every push keeps its own result.
+  group: ci-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:

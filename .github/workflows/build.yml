@@ -17,11 +17,8 @@ on:
 permissions:
   contents: read
 
-# One build per ref at a time. Queued, not cancelled: a nightly run must not cancel a build
-# started by hand.
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: false
+# No concurrency group: GitHub cancels a waiting run when a newer one joins its group, so a
+# nightly run could cancel a build started by hand. Parallel builds run on separate runners.
 
 defaults:
   run:
@@ -86,6 +83,10 @@ jobs:
         env:
           MIHENK_SKIP_WEB_BUILD: "1"
         run: uv build --wheel
+
+      # Nothing is built for release with a licence problem, even from a ref whose CI failed.
+      - name: Check the licences
+        run: uv run python tools/check_licenses.py
 
       - name: Freeze the app with PyInstaller
         run: uv run pyinstaller packaging/mihenk.spec --noconfirm

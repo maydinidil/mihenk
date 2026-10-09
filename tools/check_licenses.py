@@ -148,6 +148,7 @@ def python_runtime_requirements() -> list[Requirement]:
         [
             uv,
             "export",
+            "--locked",
             "--color",
             "never",
             "--no-dev",

@@ -11,9 +11,10 @@ also means a benchmark. The app tests every price against its source.
 
 ## State
 
-**Stage 0: not usable yet.** The repository, the licence, the design and the plan are in place,
-and the Python toolchain is set up. The app window, the capture code and the installers are
-still to come. There is nothing to install or run today.
+**Stage 0: not usable yet.** The foundation is built: a local server that only this machine can
+reach, the app window with an empty set of screens, the browser driver, the repository checks,
+the packaging scripts and CI. Capturing pricing pages is stage 1. There is nothing to install
+today: no release has been published yet.
 
 | Where | What |
 |---|---|
@@ -39,8 +40,8 @@ The full terms are in [`LICENSE`](LICENSE). This summary is a convenience and do
 
 ## Checks
 
-These are the checks the project uses. Run them from the repository root. At stage 0 only the first
-three exist. The others arrive with the code they check.
+These are the checks the project uses. Run them from the repository root; CI runs the same
+commands on Windows and macOS.
 
 | Check | Command |
 |---|---|

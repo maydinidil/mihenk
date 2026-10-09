@@ -108,19 +108,39 @@ def test_robots_blocks_the_page_unless_ignored(
 
 
 @pytest.mark.usefixtures("no_pacing")
-def test_a_snapshot_path_that_is_too_long_is_one_clear_line_and_exit_1(
+def test_a_snapshot_path_that_is_too_long_is_one_clear_line_exit_2_and_no_request(
     site: LocalSite, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     data_dir = tmp_path / ("d" * 200)  # the snapshot path would pass 259 characters
     url = serve_page(site, "static-table")
     code = cli.main(["capture", url, "--data-dir", str(data_dir)])
     captured = capsys.readouterr()
-    assert code == 1
+    assert code == 2
+    assert site.hits == []  # not even robots.txt: the page is not fetched to fail on the write
     assert captured.out == ""
     assert "Traceback" not in captured.err
     assert len(captured.err.strip().splitlines()) == 1
-    assert captured.err.startswith("mihenk capture: failed: ValueError: snapshot path too long")
+    assert captured.err.startswith("mihenk capture: error: the data folder is too deep")
     assert not data_dir.exists()
+
+
+@pytest.mark.usefixtures("no_pacing")
+def test_a_cookie_that_robots_txt_sets_does_not_reach_the_page_request(
+    site: LocalSite, tmp_path: Path
+) -> None:
+    # The run uses one http client for the pages and another for robots.txt (design §8.3).
+    site.add(
+        "/robots.txt",
+        "User-agent: *\nAllow: /\n",
+        content_type="text/plain",
+        headers={"Set-Cookie": "robots=1; Path=/"},
+    )
+    url = serve_page(site, "static-table")
+    assert cli.main(["capture", url, "--data-dir", str(tmp_path)]) == 0
+    assert site.hits == ["/robots.txt", "/static-table"]
+    robots_request, page_request = site.hit_headers
+    assert "cookie" not in robots_request
+    assert "cookie" not in page_request, page_request
 
 
 @pytest.mark.usefixtures("no_pacing")

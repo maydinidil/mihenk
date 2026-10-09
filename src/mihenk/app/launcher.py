@@ -7,7 +7,9 @@ background thread and is told to exit when the window closes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
+import os
 import re
 import secrets
 import socket
@@ -18,6 +20,7 @@ import webbrowser
 from collections.abc import Sequence
 from importlib import resources
 from pathlib import Path
+from typing import NoReturn
 
 import uvicorn
 from fastapi import FastAPI
@@ -101,6 +104,16 @@ def open_log_file(path: Path) -> logging.Handler:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     handler.addFilter(TokenRedactingFilter())
     return handler
+
+
+_PYWEBVIEW_FILTER = TokenRedactingFilter()
+
+
+def redact_tokens_in_pywebview_log() -> None:
+    """The filter on the "pywebview" logger too: pywebview adds a console handler of its own to
+    that logger, which writes to stderr when mihenk runs from a terminal and never passes
+    through the log file's handler. Every pywebview module logs through this one logger."""
+    logging.getLogger("pywebview").addFilter(_PYWEBVIEW_FILTER)  # a second call adds nothing
 
 
 class ServerThread:
@@ -236,11 +249,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
+# What `cli.main` returns after Ctrl+C (the shell's 128 + SIGINT).
+_STOPPED = 130
+
+
+def entry() -> NoReturn:
+    """The program's entry point, for the console script and `python -m mihenk`: runs `main` and
+    exits with its code.
+
+    After Ctrl+C in a command line command the process leaves at once, without the interpreter's
+    shutdown. The Playwright loop that the interrupt abandoned would otherwise print about thirty
+    lines of "Task was destroyed but it is pending" and transport tracebacks as it is torn down.
+    The output is flushed first, and the http clients were closed on the way out of `cli.main`.
+    """
+    code = main()
+    if code == _STOPPED:
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None:  # a windowed build has none
+                with contextlib.suppress(OSError, ValueError):
+                    stream.flush()
+        os._exit(code)
+    raise SystemExit(code)
+
+
 def _run(args: argparse.Namespace) -> int:
     data_dir: Path = args.data_dir or default_data_dir()
     logging.basicConfig(
         level=logging.INFO, handlers=[open_log_file(logs_dir(data_dir) / "mihenk.log")]
     )
+    redact_tokens_in_pywebview_log()
     sock = bind_loopback()
     port = int(sock.getsockname()[1])
     token = new_token()

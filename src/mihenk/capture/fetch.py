@@ -31,6 +31,12 @@ _HEADER_CHARSET = re.compile(r"""charset\s*=\s*["']?([A-Za-z0-9_.:-]+)""", re.IG
 # that is never closed runs to the end of those bytes.
 _META_WINDOW = 1024
 _HTML_COMMENT = re.compile(rb"<!--.*?(?:-->|\Z)", re.DOTALL)
+# A page with no declared charset whose bytes are not UTF-8 gets a second look: its <meta
+# charset> may sit past the first 1024 bytes (after a long script or style block), which a
+# browser would still find, as the prescan is only a first guess. The rest of the head is read,
+# up to this many bytes.
+_LATE_META_LIMIT = 64 * 1024
+_HEAD_END = re.compile(rb"</head", re.IGNORECASE)
 
 
 class FetchFailure(Exception):
@@ -114,28 +120,57 @@ def _codec(name: str | None) -> str | None:
     return codec if codec in _ALLOWED_CODECS else None
 
 
-def _meta_codec(body: bytes) -> str | None:
-    """The charset a <meta> tag in the first 1024 bytes declares, if it is a usable one."""
-    window = _HTML_COMMENT.sub(b" ", body[:_META_WINDOW])
+def _declared_codec(window: bytes, cut: bool) -> str | None:
+    """The usable charset a <meta> tag in `window` (comments already removed) declares. `cut` is
+    whether the window ends before the page does."""
     meta = _META_CHARSET.search(window)
-    if meta is not None and meta.end() == len(window) and len(body) > _META_WINDOW:
+    if meta is not None and meta.end() == len(window) and cut:
         meta = None  # the window cut the value short (`big5` of `big5-hkscs`): not a declaration
     codec = _codec(meta.group(1).decode("ascii", "ignore") if meta else None)
     # The tag was read as ASCII-compatible bytes, so the page is not UTF-16 whatever it says.
     return "utf-8" if codec in ("utf-16-le", "utf-16-be") else codec
 
 
+def _meta_codec(body: bytes) -> str | None:
+    """The charset a <meta> tag in the first 1024 bytes declares, if it is a usable one."""
+    window = _HTML_COMMENT.sub(b" ", body[:_META_WINDOW])
+    return _declared_codec(window, len(body) > _META_WINDOW)
+
+
+def _late_meta_codec(body: bytes) -> str | None:
+    """The charset a <meta> tag declares anywhere in the head: up to `</head>` or the first
+    64 KiB, comments skipped. For a page the first 1024 bytes did not settle."""
+    region = _HTML_COMMENT.sub(b" ", body[:_LATE_META_LIMIT])
+    head_end = _HEAD_END.search(region)
+    if head_end is not None:
+        return _declared_codec(region[: head_end.start()], cut=False)
+    return _declared_codec(region, len(body) > _LATE_META_LIMIT)
+
+
+def _is_utf8(body: bytes) -> bool:
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def decode_html(body: bytes, content_type: str | None) -> tuple[str, str]:
     """Text and the encoding used: a BOM (UTF-8 or UTF-16), then the HTTP charset, then <meta
-    charset>, then UTF-8. Only the encodings of the WHATWG table count; any other is ignored."""
+    charset> in the first 1024 bytes, then (for a body that is not valid UTF-8) a <meta charset>
+    later in the head, then UTF-8. Only the encodings of the WHATWG table count; any other is
+    ignored."""
     if body.startswith(codecs.BOM_UTF8):
         return body.decode("utf-8-sig", errors="replace"), "utf-8-sig"
     for bom, codec in _UTF16_BOMS:
         if body.startswith(bom):
             return body[len(bom) :].decode(codec, errors="replace"), codec
     header = _HEADER_CHARSET.search(content_type or "")
-    codec = _codec(header.group(1) if header else None) or _meta_codec(body) or "utf-8"
-    return body.decode(codec, errors="replace"), codec
+    declared = _codec(header.group(1) if header else None) or _meta_codec(body)
+    if declared is None and not _is_utf8(body):
+        declared = _late_meta_codec(body)
+    encoding = declared or "utf-8"
+    return body.decode(encoding, errors="replace"), encoding
 
 
 def make_client(accept_language: str, timeout_s: float = 30.0) -> http.Client:

@@ -20,6 +20,7 @@ from mihenk.capture.snapshot import (
     SnapshotExists,
     SnapshotInput,
     new_run_id,
+    snapshot_path_too_long,
     write_snapshot,
 )
 from mihenk.trim.structured import StructuredBlock, StructuredKind, extract_structured
@@ -661,3 +662,48 @@ def test_a_relative_root_gives_an_absolute_snapshot_path(
     monkeypatch.chdir(elsewhere)  # the path still names the snapshot after the directory changed
     assert (ref.path / "meta.json").is_file()
     assert read_meta(ref.path)["run_id"] == RUN_ID
+
+
+# --- snapshot_path_too_long: the rule write_snapshot applies, asked in advance ------------------
+
+
+@pytest.mark.parametrize(
+    "state_label", ["s" * 32, "a"], ids=["final-is-longer", "temporary-is-longer"]
+)
+def test_snapshot_path_too_long_is_exact_at_the_limit_and_agrees_with_write_snapshot(
+    tmp_path: Path, state_label: str
+) -> None:
+    page_key = "k" * 32
+    just_under = padded_root(tmp_path, page_key, state_label, MAX_PATH_CHARS)
+    if longest_path(just_under, page_key, state_label) != MAX_PATH_CHARS:
+        pytest.skip("the temporary folder is already too long to build a root of this size")
+    assert not snapshot_path_too_long(just_under, RUN_ID, page_key, state_label)
+    write_snapshot(just_under, snap(page_key=page_key, state_label=state_label))
+
+    one_over = padded_root(tmp_path, page_key, state_label, MAX_PATH_CHARS + 1)
+    assert snapshot_path_too_long(one_over, RUN_ID, page_key, state_label)
+    with pytest.raises(ValueError, match="too long"):
+        write_snapshot(one_over, snap(page_key=page_key, state_label=state_label))
+
+
+def test_snapshot_path_too_long_counts_utf16_units(tmp_path: Path) -> None:
+    emoji = chr(0x1F600)
+    page_key, state_label = "k" * 32, "s" * 32
+    pad = MAX_PATH_CHARS - longest_path(tmp_path / "p", page_key, state_label) - 1
+    fits = tmp_path / ("p" * pad + emoji)  # MAX_PATH_CHARS units: the emoji counts twice
+    over = tmp_path / ("p" * (1 + pad) + emoji)
+    assert not snapshot_path_too_long(fits, RUN_ID, page_key, state_label)
+    assert snapshot_path_too_long(over, RUN_ID, page_key, state_label)
+
+
+def test_the_longer_state_label_is_what_can_push_a_path_over(tmp_path: Path) -> None:
+    page_key = "k" * 32
+    root = padded_root(tmp_path, page_key, "s" * 64, MAX_PATH_CHARS + 1)
+    assert snapshot_path_too_long(root, RUN_ID, page_key, "s" * 64)
+    assert not snapshot_path_too_long(root, RUN_ID, page_key, "a")
+
+
+def test_snapshot_path_too_long_makes_no_folder(tmp_path: Path) -> None:
+    root = tmp_path / "does-not-exist"
+    assert not snapshot_path_too_long(root, RUN_ID, "acme-pricing", "default")
+    assert not root.exists()

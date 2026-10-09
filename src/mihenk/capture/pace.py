@@ -10,18 +10,26 @@ import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
+import httpx2 as http
+
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def idna_host(url: str) -> str:
     """The host of a URL, spelled one way: lower-case IDNA, no trailing dot, no port.
 
-    An IPv6 address keeps its square brackets. A name that is not valid IDNA stays as written
-    (already lower-cased by `hostname`). Never the user name or password.
+    Spelled as the http client spells it (`httpx2`, IDNA 2008, which Chrome's UTS 46 agrees with
+    for the names that matter): `faß.de` is `xn--fa-hia.de`. Python's own "idna" codec is IDNA
+    2003 and would read it as `fass.de`, another site, so it is only the fallback for a URL
+    the client refuses. An IPv6 address keeps its square brackets. A name that is not valid
+    IDNA stays as written (already lower-cased by `hostname`). Never the user name or password.
     """
-    host = (urlsplit(url).hostname or "").rstrip(".")
-    with contextlib.suppress(UnicodeError):
-        host = host.encode("idna").decode("ascii")
+    try:
+        host = http.URL(url).raw_host.decode("ascii").rstrip(".")
+    except (http.InvalidURL, UnicodeError):
+        host = (urlsplit(url).hostname or "").rstrip(".")
+        with contextlib.suppress(UnicodeError):
+            host = host.encode("idna").decode("ascii")
     if ":" in host:
         host = f"[{host}]"
     return host
@@ -62,3 +70,8 @@ class Pace:
             self._sleep(delay)
         self._last[host] = now + delay
         return delay
+
+    def mark(self, host: str) -> None:
+        """Records a request to `host` that was made without `wait` (the browser made it), as of
+        now, and does not sleep. The next `wait` for the host then leaves a full interval."""
+        self._last[host] = self._clock()

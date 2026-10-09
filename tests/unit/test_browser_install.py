@@ -23,6 +23,7 @@ from playwright.sync_api import Playwright
 from mihenk import cli
 from mihenk.capture import browser
 from mihenk.capture.browser import (
+    LOOPBACK_ONLY_VARIABLE,
     BrowserUnavailable,
     browsers_dir,
     has_downloaded_chromium,
@@ -129,9 +130,11 @@ class _Chromium:
         self.working = working
         self.not_found = not_found
         self.tried: list[str] = []
+        self.options: list[dict[str, Any]] = []  # what each launch got besides channel, headless
 
-    def launch(self, *, channel: str, headless: bool) -> str:
+    def launch(self, *, channel: str, headless: bool, **options: Any) -> str:
         self.tried.append(channel)
+        self.options.append(options)
         if channel not in self.working:
             raise PlaywrightError(self.not_found.format(channel=channel))
         return f"browser {channel}"
@@ -190,6 +193,67 @@ def test_a_chromium_that_is_not_downloaded_is_a_missing_browser_not_an_error() -
     with pytest.raises(BrowserUnavailable):
         launch_browser(pw, allow_downloaded=True)
     assert chromium.tried == ["chrome", "msedge", "chromium"]
+
+
+# --- a browser that reaches nothing but this machine ---------------------------------------------
+
+
+def test_with_the_loopback_variable_every_launch_gets_the_host_rules_and_a_dead_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(LOOPBACK_ONLY_VARIABLE, "1")
+    pw, chromium = _playwright()  # nothing launches, so every channel is tried
+    with pytest.raises(BrowserUnavailable):
+        launch_browser(pw, allow_downloaded=True)
+    expected = {
+        "args": ["--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"],
+        "proxy": {"server": "http://127.0.0.1:9", "bypass": "127.0.0.1"},
+    }
+    assert chromium.options == [expected, expected, expected]
+
+
+def test_the_loopback_options_reach_the_launch_that_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(LOOPBACK_ONLY_VARIABLE, "1")
+    pw, chromium = _playwright(working={"chrome"})
+    assert launch_browser(pw).channel == "chrome"
+    (options,) = chromium.options
+    assert options["args"] == ["--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"]
+    assert options["proxy"] == {"server": "http://127.0.0.1:9", "bypass": "127.0.0.1"}
+
+
+def test_without_the_loopback_variable_the_launch_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(LOOPBACK_ONLY_VARIABLE, raising=False)
+    pw, chromium = _playwright(working={"chrome"})
+    launch_browser(pw)
+    assert chromium.options == [{}]  # neither args nor proxy
+
+
+@pytest.mark.parametrize("value", ["", "0", "true", "yes", "on", " 1"])
+def test_only_the_value_1_turns_the_loopback_limit_on(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv(LOOPBACK_ONLY_VARIABLE, value)
+    pw, chromium = _playwright(working={"chrome"})
+    launch_browser(pw)
+    assert chromium.options == [{}]
+
+
+def test_the_suite_sets_the_variable_for_its_own_browsers_and_children() -> None:
+    # tests/conftest.py sets it at session start (before the browser fixtures launch) and again
+    # for each test; a child process this test starts inherits it.
+    assert os.environ[LOOPBACK_ONLY_VARIABLE] == "1"
+    result = subprocess.run(
+        [sys.executable, "-c", f"import os; print(os.environ.get({LOOPBACK_ONLY_VARIABLE!r}))"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.stdout.strip() == "1"
 
 
 # --- the environment Playwright starts with -----------------------------------------------------

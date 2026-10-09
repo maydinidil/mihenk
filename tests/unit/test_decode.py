@@ -307,10 +307,10 @@ def test_a_meta_tag_inside_the_first_1024_bytes_is_read() -> None:
     assert decode_html(page, None)[1] == "cp1254"
 
 
-def test_a_meta_tag_after_the_first_1024_bytes_is_not_read() -> None:
+def test_a_meta_tag_after_the_first_1024_bytes_is_not_read_for_a_page_that_is_utf8() -> None:
     padding = b"<p>" + b"x" * 1100 + b"</p>"
-    page = padding + b"<meta charset='windows-1254'>" + "İstanbul".encode("cp1254")
-    assert decode_html(page, None)[1] == "utf-8"
+    page = padding + b"<meta charset='windows-1254'>" + "İstanbul".encode()
+    assert decode_html(page, None) == (page.decode("utf-8"), "utf-8")
 
 
 def test_a_meta_tag_cut_by_the_1024_byte_window_is_not_read() -> None:
@@ -354,3 +354,106 @@ def test_several_comments_each_end_at_their_own_close() -> None:
 def test_the_header_charset_is_not_limited_by_the_prescan_window() -> None:
     page = b"<p>" + b"x" * 2000 + "</p>İstanbul".encode("cp1254")
     assert decode_html(page, "text/html; charset=windows-1254")[1] == "cp1254"
+
+
+# The late <meta>: a second look, only for a page with no declared charset that is not UTF-8.
+
+LETTERS = "ışık şeker ğ"
+
+
+def _late_page(body: bytes, meta: bytes = b'<meta charset="windows-1254">') -> bytes:
+    """A page whose <meta charset> comes at byte 1424, after a script, inside the head."""
+    script = b'<script>var padding = "' + b"p" * 1347 + b'";</script>'
+    page = b"<!doctype html><html><head><title>t</title>" + script + meta
+    page += b"</head><body><p>" + body + b"</p></body></html>"
+    assert page.index(meta) >= 1024
+    return page
+
+
+def test_a_late_meta_tag_reads_a_windows_1254_page_with_no_header_charset() -> None:
+    page = _late_page(LETTERS.encode("cp1254"))
+    assert page.index(b"<meta") == 1424  # past the 1024-byte prescan
+    text, encoding = decode_html(page, "text/html")
+    assert encoding == "cp1254"
+    assert LETTERS in text
+    assert "\ufffd" not in text
+
+
+def test_a_late_meta_tag_is_read_with_no_content_type_at_all() -> None:
+    assert decode_html(_late_page(LETTERS.encode("cp1254")), None)[1] == "cp1254"
+
+
+def test_a_utf8_page_with_a_late_wrong_meta_tag_stays_utf8() -> None:
+    page = _late_page(LETTERS.encode("utf-8"))  # the meta says windows-1254, the bytes are UTF-8
+    text, encoding = decode_html(page, "text/html")
+    assert encoding == "utf-8"
+    assert LETTERS in text
+    assert "\ufffd" not in text
+
+
+def test_the_first_1024_bytes_still_come_first() -> None:
+    early = b'<meta charset="windows-1254">'
+    page = early + _late_page(LETTERS.encode("cp1254"), meta=b'<meta charset="utf-8">')
+    assert decode_html(page, None)[1] == "cp1254"
+
+
+def test_a_header_charset_beats_a_late_meta_tag() -> None:
+    page = _late_page(LETTERS.encode("cp1254"), meta=b'<meta charset="utf-8">')
+    text, encoding = decode_html(page, "text/html; charset=windows-1254")
+    assert (encoding, LETTERS in text) == ("cp1254", True)
+
+
+def test_a_header_charset_that_is_not_usable_does_not_stop_the_late_meta_tag() -> None:
+    page = _late_page(LETTERS.encode("cp1254"))
+    assert decode_html(page, "text/html; charset=no-such-thing")[1] == "cp1254"
+
+
+def test_a_late_meta_tag_in_a_comment_is_not_read() -> None:
+    page = _late_page(
+        LETTERS.encode("cp1254"),
+        meta=b'<!-- <meta charset="windows-1254"> --><meta charset="utf-8">',
+    )
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_a_meta_tag_after_the_head_is_not_read() -> None:
+    script = b'<script>var padding = "' + b"p" * 1347 + b'";</script>'
+    page = b"<html><head>" + script + b"</head><body>" + LETTERS.encode("cp1254")
+    page += b'<meta charset="windows-1254"></body></html>'
+    text, encoding = decode_html(page, None)
+    assert encoding == "utf-8"
+    assert "\ufffd" in text
+
+
+def test_a_late_meta_tag_with_a_charset_outside_the_table_is_ignored() -> None:
+    page = _late_page(LETTERS.encode("cp1254"), meta=b'<meta charset="utf-7">')
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_a_late_meta_tag_that_says_utf16_is_read_as_utf8() -> None:
+    page = _late_page(LETTERS.encode("cp1254"), meta=b'<meta charset="utf-16le">')
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_a_late_meta_tag_past_64_kib_is_not_read() -> None:
+    padding = b'<script>var padding = "' + b"p" * (64 * 1024) + b'";</script>'
+    page = b"<html><head>" + padding + b'<meta charset="windows-1254"></head><body>'
+    page += LETTERS.encode("cp1254") + b"</body></html>"
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_a_late_meta_value_cut_by_the_64_kib_limit_is_not_read() -> None:
+    tag = b"<meta charset='big5-hkscs'>"
+    padding = b"<html><head><p>" + b"x" * (
+        64 * 1024 - len(b"<html><head><p>") - len(b"<meta charset='big5")
+    )
+    page = padding + tag + LETTERS.encode("cp1254")
+    assert page[: 64 * 1024].endswith(b"charset='big5")
+    assert decode_html(page, None)[1] == "utf-8"
+
+
+def test_a_page_that_is_not_utf8_and_declares_nothing_is_decoded_as_before() -> None:
+    page = b"<html><head><title>t</title></head><body>" + LETTERS.encode("cp1254")
+    text, encoding = decode_html(page, None)
+    assert encoding == "utf-8"
+    assert "\ufffd" in text

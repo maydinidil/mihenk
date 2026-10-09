@@ -196,6 +196,11 @@ def _redirect_block(spec: PageSpec, ctx: RunContext, final_url: str) -> str | No
     """
     if not spec.respect_robots or not is_http_url(final_url):
         return None
+    final_host = host_key(final_url)
+    if final_host != host_key(spec.url):
+        # Chrome has just requested the page from this other site, and the pace never saw it:
+        # mark it, so that the robots.txt request that may follow waits its turn.
+        ctx.pace.mark(final_host)
     decision = ctx.robots.check(final_url)
     if decision.allowed:
         return None

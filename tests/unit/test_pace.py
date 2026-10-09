@@ -1,6 +1,7 @@
 import pytest
 
-from mihenk.capture.pace import Pace, host_key
+from mihenk.capture.fetch import make_client
+from mihenk.capture.pace import Pace, host_key, idna_host
 
 
 class FakeClock:
@@ -92,3 +93,80 @@ def test_a_wait_that_is_already_over_stays_zero_after_the_clock_steps_forward() 
     fake.now += 3600.0
     assert pace.wait("a.example") == 0.0
     assert fake.slept == []
+
+
+# --- international host names: spelled as the client spells them -------------------------------
+
+
+def _clients_host(url: str) -> str:
+    """The host the http client sends the request to: its Host header (the port only when it is
+    not the scheme's default, as `host_key` writes it)."""
+    with make_client("en") as client:
+        request = client.build_request("GET", url)
+    host = request.url.raw_host.decode("ascii")
+    assert request.headers["host"].split(":")[0] == host
+    return request.headers["host"]
+
+
+@pytest.mark.parametrize(
+    ("url", "key"),
+    [
+        ("http://fa\u00df.de/", "xn--fa-hia.de"),  # sharp s: IDNA 2003 would read it as "ss"
+        ("http://\u03c3\u03b1\u03c2.gr/", "xn--mxa8ab.gr"),  # final sigma: 2003 maps it to sigma
+        ("http://\u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03cd\u03c2.gr/", "xn--pxac2aodam1e.gr"),
+        ("https://b\u00fccher.example/preise", "xn--bcher-kva.example"),
+        ("http://FA\u00df.DE:80/preise", "xn--fa-hia.de"),
+        ("http://fa\u00df.de:8080/preise", "xn--fa-hia.de:8080"),
+    ],
+)
+def test_host_key_spells_an_international_host_as_the_client_does(url: str, key: str) -> None:
+    assert host_key(url) == key
+    assert host_key(url) == _clients_host(url)
+
+
+def test_an_international_host_does_not_become_another_site() -> None:
+    # "fass.de" is another domain than "fa\u00df.de" (xn--fa-hia.de).
+    assert host_key("http://fa\u00df.de/") != host_key("http://fass.de/")
+    assert host_key("http://fa\u00df.de/") == host_key("http://xn--fa-hia.de/")
+
+
+def test_idna_host_keeps_the_old_spelling_for_a_url_the_client_refuses() -> None:
+    # A zero-width joiner between two ordinary letters is not valid IDNA 2008: the client
+    # refuses the address, and the host is then spelled by Python's codec, which drops it.
+    assert idna_host("http://a\u200db.de/") == "ab.de"
+
+
+@pytest.mark.parametrize(
+    ("url", "host"),
+    [
+        ("http://Shop.Example./x", "shop.example"),
+        ("http://127.0.0.1:5000/x", "127.0.0.1"),
+        ("http://[::1]:80/x", "[::1]"),
+        ("http://user:pw@shop.example:80/x", "shop.example"),
+    ],
+)
+def test_idna_host_still_strips_the_dot_the_port_and_the_credentials(url: str, host: str) -> None:
+    assert idna_host(url) == host
+
+
+# --- a request the browser made is marked, not waited for --------------------------------------
+
+
+def test_mark_records_a_request_without_sleeping() -> None:
+    fake = FakeClock()
+    pace = Pace(2.0, fake.clock, fake.sleep)
+    pace.mark("a.example")
+    assert fake.slept == []
+    assert pace.wait("a.example") == 2.0  # a full interval after the mark
+    assert fake.slept == [2.0]
+
+
+def test_mark_counts_from_now_and_leaves_other_sites_alone() -> None:
+    fake = FakeClock()
+    pace = Pace(2.0, fake.clock, fake.sleep)
+    pace.wait("a.example")
+    fake.now += 5.0
+    pace.mark("a.example")
+    fake.now += 0.5
+    assert pace.wait("a.example") == 1.5
+    assert pace.wait("b.example") == 0.0

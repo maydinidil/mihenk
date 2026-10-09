@@ -224,6 +224,45 @@ regions[1].addEventListener("change", function (event) {
     assert not any("WRONG" in text for text in texts.values())
 
 
+def test_the_test_browser_reaches_nothing_but_this_machine(
+    site: LocalSite, browser: LaunchedBrowser
+) -> None:
+    # tests/conftest.py makes launch_browser confine the browser (MIHENK_BROWSER_LOOPBACK_ONLY):
+    # a name other than 127.0.0.1 does not resolve and the proxy is a dead port. The page tries
+    # a name that never resolves (.invalid) and a documentation address (RFC 5737) that nothing
+    # answers; both must fail, and the page on 127.0.0.1 must still render.
+    site.add("/ping", "pong", content_type="text/plain")
+    site.add(
+        "/outside",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Outside</title></head>
+<body>
+<p id="own">own: pending</p>
+<p id="name">name: pending</p>
+<p id="address">address: pending</p>
+<script>
+function probe(url, id, label) {
+  fetch(url, { mode: "no-cors" }).then(
+    function () { document.getElementById(id).textContent = label + ": reached"; },
+    function () { document.getElementById(id).textContent = label + ": failed"; }
+  );
+}
+probe("/ping", "own", "own");
+probe("http://outside.invalid/", "name", "name");
+probe("http://192.0.2.1/", "address", "address");
+</script>
+</body></html>""",
+    )
+    state = _rendered(
+        render_states(
+            browser.browser, site.url("/outside"), _single(), RenderSettings(), _no_pacing
+        )[0]
+    )
+    assert "own: reached" in state.visible_text  # this machine is still reachable
+    assert "name: failed" in state.visible_text
+    assert "address: failed" in state.visible_text
+    assert state.status == 200
+
+
 def test_render_finishes_on_never_idle_page(site: LocalSite, browser: LaunchedBrowser) -> None:
     url = serve_page(site, "never-idle")
     settings = RenderSettings(idle_cap_s=2.0)

@@ -13,11 +13,19 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import Browser, Playwright
 from playwright.sync_api import Error as PlaywrightError
 
 CHANNEL_ORDER: tuple[str, ...] = ("chrome", "msedge")
+# The tests set this to 1; a user who sets it gets a browser that reaches nothing but this
+# machine: every name except 127.0.0.1 fails to resolve, and the proxy is a dead port.
+LOOPBACK_ONLY_VARIABLE = "MIHENK_BROWSER_LOOPBACK_ONLY"
+_LOOPBACK_ONLY_OPTIONS: dict[str, Any] = {
+    "args": ["--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"],
+    "proxy": {"server": "http://127.0.0.1:9", "bypass": "127.0.0.1"},
+}
 # Playwright reports a missing branded browser with this phrase. It is not documented API
 # (checked against Playwright 1.63's source, §22), so a test pins it.
 _NOT_FOUND = "is not found at"
@@ -40,9 +48,12 @@ def launch_browser(
 ) -> LaunchedBrowser:
     tried: list[str] = []
     channels = CHANNEL_ORDER + (("chromium",) if allow_downloaded else ())
+    options = _LOOPBACK_ONLY_OPTIONS if os.environ.get(LOOPBACK_ONLY_VARIABLE) == "1" else {}
     for channel in channels:
         try:
-            return LaunchedBrowser(channel, pw.chromium.launch(channel=channel, headless=headless))
+            return LaunchedBrowser(
+                channel, pw.chromium.launch(channel=channel, headless=headless, **options)
+            )
         except PlaywrightError as exc:
             if _NOT_FOUND not in str(exc) and "Executable doesn't exist" not in str(exc):
                 raise

@@ -45,7 +45,7 @@ from mihenk.capture.recipe import Recipe, State
 from mihenk.capture.render import RenderSettings
 from mihenk.capture.robots import RobotsFetch, RobotsGate
 from mihenk.capture.run import CaptureResult, PageSpec, RunContext, capture_page, is_http_url
-from mihenk.capture.snapshot import new_run_id
+from mihenk.capture.snapshot import MAX_PATH_CHARS, new_run_id, snapshot_path_too_long
 
 # Requests to one site are at least this far apart (design §8.2).
 PACE_INTERVAL_S = 2.0
@@ -237,6 +237,18 @@ def _capture_in_browser(spec: PageSpec, ctx: RunContext, data_dir: Path) -> list
             raise
 
 
+def _make_clients(accept_language: str) -> tuple[http.Client, http.Client]:
+    """The http client for the pages and a second one for robots.txt (closed with the first if
+    the second cannot be made)."""
+    page_client = make_client(accept_language)
+    try:
+        robots_client = make_client(accept_language)
+    except BaseException:
+        page_client.close()
+        raise
+    return page_client, robots_client
+
+
 def _capture(args: argparse.Namespace) -> int:
     try:
         recipe = _build_recipe(args.method, args.state)
@@ -250,13 +262,25 @@ def _capture(args: argparse.Namespace) -> int:
     data_dir: Path = args.data_dir or default_data_dir()
     country: str = args.country or region_from_locale(system_locale_name())
     spec = PageSpec(args.key or default_key(args.url), args.url, recipe, not args.ignore_robots)
+    run_id = new_run_id(datetime.now(UTC))
+    snapshots_root = data_dir / "snapshots"
+    longest_label = max((state.label for state in recipe.states), key=len)
+    if snapshot_path_too_long(snapshots_root, run_id, spec.key, longest_label):
+        # Before any request: otherwise the page is fetched and the write then fails.
+        _emit(
+            sys.stderr,
+            "mihenk capture: error: the data folder is too deep for a snapshot path "
+            f"(at most {MAX_PATH_CHARS} characters): {_one_line(str(data_dir))}",
+        )
+        return 2
     settings = RenderSettings()
-    # One client per run, closed after it: its cookies must not reach another brand or run (§8.3).
-    # A malformed proxy variable (HTTP_PROXY and the like) fails here, before any request: with
-    # an address httpx2 cannot read (InvalidURL), a scheme it does not know (ValueError) or a
-    # SOCKS proxy without the package for it (ImportError).
+    # One client for the pages and one for robots.txt, closed after the run: cookies must not
+    # reach another brand or run (§8.3), and a cookie that robots.txt sets must not reach the
+    # pages. A malformed proxy variable (HTTP_PROXY and the like) fails here, before any
+    # request: with an address httpx2 cannot read (InvalidURL), a scheme it does not know
+    # (ValueError) or a SOCKS proxy without the package for it (ImportError).
     try:
-        client = make_client(settings.locale)
+        client, robots_client = _make_clients(settings.locale)
     except (ImportError, ValueError, http.InvalidURL) as exc:
         _emit(
             sys.stderr,
@@ -271,11 +295,11 @@ def _capture(args: argparse.Namespace) -> int:
 
         def fetch_robots_paced(url: str) -> RobotsFetch:
             # Every request robots.txt takes, its redirect hops included, is paced like a page.
-            return fetch_robots(client, url, before_request=pace_request)
+            return fetch_robots(robots_client, url, before_request=pace_request)
 
         ctx = RunContext(
-            run_id=new_run_id(datetime.now(UTC)),
-            snapshots_root=data_dir / "snapshots",
+            run_id=run_id,
+            snapshots_root=snapshots_root,
             collection_country=country,
             robots=RobotsGate(fetch_robots_paced),
             pace=pace,
@@ -295,7 +319,10 @@ def _capture(args: argparse.Namespace) -> int:
             _emit(sys.stderr, f"mihenk capture: failed: {type(exc).__name__}: {message}")
             return 1
     finally:
-        client.close()
+        try:
+            client.close()
+        finally:
+            robots_client.close()
     for result in results:
         _emit(sys.stdout, _result_line(result))
     return 0 if all(result.status is CaptureStatus.OK for result in results) else 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 from mihenk import cli
 from mihenk.capture import browser as browser_module
 from mihenk.capture.models import SAFE_SEGMENT
+from mihenk.capture.snapshot import new_run_id, snapshot_path_too_long
 
 # --- the region of a locale name ----------------------------------------------------------------
 
@@ -211,6 +213,69 @@ def test_a_very_long_bad_url_is_cut_in_the_message(
     assert len(err) < 400
 
 
+def _deep_data_dir(tmp_path: Path, label: str) -> Path:
+    """A data folder whose snapshot path fits the limit with a short state label and not with
+    `label`, found by asking the rule itself (the run id has a fixed length)."""
+    run_id = new_run_id(datetime.now(UTC))
+    key = "127-0-0-1-x"
+    for pad in range(1, 400):
+        data_dir = tmp_path / ("d" * pad)
+        root = data_dir / "snapshots"
+        if snapshot_path_too_long(root, run_id, key, label):
+            assert not snapshot_path_too_long(root, run_id, key, "a")
+            return data_dir
+    raise AssertionError("no data folder length found")
+
+
+def test_the_longest_state_label_decides_whether_the_snapshot_path_fits(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    _nothing_may_start(monkeypatch)
+    long_label = "s" * 64
+    data_dir = _deep_data_dir(tmp_path, long_label)
+    code = cli.main(
+        [
+            "capture",
+            "http://127.0.0.1/x",
+            "--key",
+            "127-0-0-1-x",
+            "--method",
+            "render_interact",
+            "--state",
+            "a",
+            "--state",
+            long_label,
+            "--data-dir",
+            str(data_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err.startswith("mihenk capture: error: the data folder is too deep")
+    assert len(captured.err.strip().splitlines()) == 1
+    assert not data_dir.exists()
+    # With only the short label the same data folder is accepted: the capture goes on and
+    # reaches the (stood-in) client, which is the point where nothing may start.
+    with pytest.raises(_Started):
+        cli.main(
+            [
+                "capture",
+                "http://127.0.0.1/x",
+                "--key",
+                "127-0-0-1-x",
+                "--method",
+                "render_interact",
+                "--state",
+                "a",
+                "--state",
+                "b",
+                "--data-dir",
+                str(data_dir),
+            ]
+        )
+
+
 def _set_proxy_variables(monkeypatch: pytest.MonkeyPatch, proxy: str) -> None:
     """The user's proxy setting, as the app reads it. The suite's autouse fixture sets
     `NO_PROXY=*` so that tests go direct; a test of the app's proxy handling takes that back."""
@@ -297,7 +362,7 @@ def test_ctrl_c_during_a_fetch_capture_is_130_and_the_client_is_closed(
     monkeypatch.setattr(cli, "capture_page", _interrupt)
     code = cli.main(["capture", "http://127.0.0.1/x", "--data-dir", str(tmp_path)])
     _assert_stopped(code, capsys)
-    assert recorder.events == ["client closed"]
+    assert recorder.events == ["client closed", "client closed"]  # the page's and robots.txt's
 
 
 class _Session:
@@ -345,6 +410,7 @@ def test_without_ctrl_c_a_render_capture_closes_the_browser_then_playwright_then
         "browser closed",
         "playwright stopped",
         "client closed",
+        "client closed",
     ]
 
 
@@ -357,7 +423,7 @@ def test_ctrl_c_during_a_render_capture_skips_playwrights_cleanup_but_closes_the
     code = cli.main(_render_argv(tmp_path))
     _assert_stopped(code, capsys)
     # Neither the browser nor the Playwright session was closed: their sync calls hang mid-interrupt.
-    assert recorder.events == ["playwright started", "client closed"]
+    assert recorder.events == ["playwright started", "client closed", "client closed"]
 
 
 def test_ctrl_c_while_the_browser_launches_skips_playwrights_cleanup_too(
@@ -368,7 +434,7 @@ def test_ctrl_c_while_the_browser_launches_skips_playwrights_cleanup_too(
     _fake_browser_run(monkeypatch, recorder, lambda spec, ctx: [], launch=_interrupt)
     code = cli.main(_render_argv(tmp_path))
     _assert_stopped(code, capsys)
-    assert recorder.events == ["playwright started", "client closed"]
+    assert recorder.events == ["playwright started", "client closed", "client closed"]
 
 
 def test_ctrl_c_during_the_download_is_130(

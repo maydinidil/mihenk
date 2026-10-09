@@ -18,7 +18,7 @@ from mihenk.capture import run as run_module
 from mihenk.capture.browser import LaunchedBrowser
 from mihenk.capture.fetch import MAX_PAGE_BYTES, fetch_robots, make_client
 from mihenk.capture.models import CaptureStatus, Method
-from mihenk.capture.pace import Pace
+from mihenk.capture.pace import Pace, host_key
 from mihenk.capture.recipe import ClickText, Recipe, State
 from mihenk.capture.render import RenderedState, RenderSettings
 from mihenk.capture.robots import RobotsFetch, RobotsGate
@@ -653,3 +653,103 @@ def test_every_trap_page_by_its_methods(
             kinds = [(b["kind"], b["problem"]) for b in blocks]
             for wanted_block in expect["structured"]:
                 assert (wanted_block["kind"], wanted_block["problem"]) in kinds
+
+
+# --- international host names, and the pace of the browser's last request ---------------------
+
+
+def test_a_fetch_of_an_international_host_asks_robots_txt_of_the_same_site_as_the_page(
+    tmp_path: Path,
+) -> None:
+    # The page goes to xn--fa-hia.de (IDNA 2008, as the client and Chrome spell it). robots.txt
+    # must go to the same host, not to fass.de, which is another domain.
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: http.Request) -> http.Response:
+        requests.append((request.url.raw_host.decode("ascii"), request.url.path))
+        if request.url.path == "/robots.txt":
+            return http.Response(404)
+        return http.Response(
+            200, headers={"content-type": "text/html; charset=utf-8"}, content=b"<p>Preise</p>"
+        )
+
+    with http.Client(transport=http.MockTransport(handler), follow_redirects=False) as client:
+        ctx = _ctx(tmp_path, client)
+        spec = _spec("preise", "http://fa\u00df.de/preise")
+        result = _only(capture_page(spec, ctx))
+    assert result.status is CaptureStatus.OK
+    assert requests == [("xn--fa-hia.de", "/robots.txt"), ("xn--fa-hia.de", "/preise")]
+
+
+def test_the_robots_fetch_for_a_redirect_target_waits_its_turn_after_the_browsers_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chrome has just requested the page from the other site; the pace never saw that request.
+    now = [100.0]
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    pace = Pace(2.0, lambda: now[0], sleep)
+    robots_fetches: list[str] = []
+
+    def paced_robots(url: str) -> RobotsFetch:  # as the command line does: every request is paced
+        robots_fetches.append(url)
+        pace.wait(host_key(url))
+        return RobotsFetch(404, b"", "fetched")
+
+    ended = RenderedState(
+        "default", "http://other.example/page", 200, {}, "<p>Starter</p>", "Starter", b"\x89PNG"
+    )
+    monkeypatch.setattr(run_module, "render_states", lambda *args, **kwargs: [ended])
+    ctx = RunContext(
+        run_id="run-1",
+        snapshots_root=tmp_path,
+        collection_country="NL",
+        robots=RobotsGate(paced_robots),
+        pace=pace,
+        http_client=None,
+        browser=object(),
+        render=RenderSettings(),
+        now=lambda: NOW,
+    )
+    result = _only(capture_page(_spec("start", "http://start.example/pricing", Method.RENDER), ctx))
+    assert result.status is CaptureStatus.OK
+    assert robots_fetches == [
+        "http://start.example/robots.txt",
+        "http://other.example/robots.txt",
+    ]
+    assert slept == [2.0]  # the second robots.txt waited one interval after the mark
+
+
+def test_a_render_that_ends_on_the_same_site_marks_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marked: list[str] = []
+    pace = Pace(0.0)
+    monkeypatch.setattr(pace, "mark", marked.append)
+    ended = RenderedState(
+        "default",
+        "http://start.example/other-path",
+        200,
+        {},
+        "<p>Starter</p>",
+        "Starter",
+        b"\x89PNG",
+    )
+    monkeypatch.setattr(run_module, "render_states", lambda *args, **kwargs: [ended])
+    ctx = RunContext(
+        run_id="run-1",
+        snapshots_root=tmp_path,
+        collection_country="NL",
+        robots=RobotsGate(lambda url: RobotsFetch(404, b"", "fetched")),
+        pace=pace,
+        http_client=None,
+        browser=object(),
+        render=RenderSettings(),
+        now=lambda: NOW,
+    )
+    _only(capture_page(_spec("start", "http://start.example/pricing", Method.RENDER), ctx))
+    assert marked == []

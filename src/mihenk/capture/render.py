@@ -13,6 +13,7 @@ Every call that reads the page carries a timeout, so a page that spins forever i
 from __future__ import annotations
 
 import contextlib
+import functools
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -195,10 +196,19 @@ def _then_close(close: Callable[[], object]) -> Iterator[None]:
         close()
 
 
-def _close_pages(context: BrowserContext) -> None:
-    """Closes every page of the context: the state's own and any that the page opened (a
-    `window.open` or a `target=_blank` link), which would otherwise keep running unpaced."""
+def _close_pages(context: BrowserContext, own: list[Page]) -> None:
+    """Closes every page of the context: the state's own (`own` holds it, once it was opened) and
+    any that the page opened (a `window.open` or a `target=_blank` link), which would otherwise
+    keep running unpaced.
+
+    An error closing an extra page is dropped: the state is captured, and the extra page goes
+    with the context. An error closing the state's own page propagates.
+    """
     for page in list(context.pages):
+        if page not in own:
+            with contextlib.suppress(PlaywrightError):
+                page.close()
+    for page in own:
         page.close()
 
 
@@ -216,10 +226,12 @@ def render_states(
     with _then_close(context.close):
         for state in recipe.states:
             before_navigation()
-            with _then_close(lambda: _close_pages(context)):
+            own_page: list[Page] = []
+            with _then_close(functools.partial(_close_pages, context, own_page)):
                 # One page per state, in the shared context. Chrome commits the error page of a
                 # failed navigation late, and that interrupts the next navigation on the same page.
                 page = context.new_page()
+                own_page.append(page)
                 page.set_default_timeout(settings.navigation_timeout_s * 1000)
                 try:
                     results.append(_capture_state(page, url, state, settings))

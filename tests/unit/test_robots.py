@@ -250,3 +250,9 @@ def test_a_redirect_status_reaching_decide_is_disallow_all(status: int) -> None:
     decision = decide(RobotsFetch(status, b"", "fetched"), PAGE)
     assert not decision.allowed
     assert str(status) in decision.reason
+
+
+def test_robots_url_for_an_international_host_is_the_clients_spelling() -> None:
+    # IDNA 2003 would give fass.de, another site.
+    assert robots_url("http://fa\u00df.de/preise") == "http://xn--fa-hia.de/robots.txt"
+    assert robots_url("http://\u03c3\u03b1\u03c2.gr/x") == "http://xn--mxa8ab.gr/robots.txt"

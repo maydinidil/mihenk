@@ -107,6 +107,17 @@ def _longest_path_chars(target: Path) -> int:
     return max(_utf16_units(temporary), _utf16_units(final))
 
 
+def snapshot_path_too_long(root: Path, run_id: str, page_key: str, state_label: str) -> bool:
+    """Whether a snapshot of this state would not fit the path limit (`MAX_PATH_CHARS`).
+
+    The rule `write_snapshot` applies, counted the same way (UTF-16 code units, the longest file
+    in either the final folder or the temporary sibling), so a command can refuse a data folder
+    that is too deep before it requests anything.
+    """
+    target = root.absolute() / run_id / page_key / state_label
+    return _longest_path_chars(target) > MAX_PATH_CHARS
+
+
 def _write_durably(path: Path, data: bytes) -> None:
     """Write a new file and flush it to the disk, so a power cut after the rename cannot leave a
     folder whose files are empty."""
@@ -165,10 +176,10 @@ def write_snapshot(root: Path, snap: SnapshotInput) -> SnapshotRef:
     # An absolute root, so the `SnapshotRef.path` that callers keep does not depend on the
     # working directory of the moment they read it.
     target = root.absolute() / snap.run_id / snap.page_key / snap.state_label
-    longest = _longest_path_chars(target)
-    if longest > MAX_PATH_CHARS:
+    if snapshot_path_too_long(root, snap.run_id, snap.page_key, snap.state_label):
         raise ValueError(
-            f"snapshot path too long: {longest} characters, the limit is {MAX_PATH_CHARS}: {target}"
+            f"snapshot path too long: {_longest_path_chars(target)} characters, "
+            f"the limit is {MAX_PATH_CHARS}: {target}"
         )
     if target.exists():
         raise SnapshotExists(str(target))

@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mihenk = "mihenk.app.launcher:main"
+mihenk = "mihenk.app.launcher:entry"
 
 [dependency-groups]
 dev = [

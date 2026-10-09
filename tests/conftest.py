@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from mihenk.capture.browser import LOOPBACK_ONLY_VARIABLE
 from tests.helpers.site import LocalSite
 
 _real_connect = socket.socket.connect
@@ -170,6 +171,9 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     patches = pytest.MonkeyPatch()
     config.add_cleanup(patches.undo)
+    # The browser the session-scoped fixtures launch, and every child process a test starts, read
+    # this when they start: it must be set before the first fixture runs.
+    patches.setenv(LOOPBACK_ONLY_VARIABLE, "1")
     patches.setattr(socket, "getaddrinfo", _guarded_getaddrinfo)
     patches.setattr(socket, "gethostbyname", _guarded_gethostbyname)
     patches.setattr(socket, "gethostbyname_ex", _guarded_gethostbyname_ex)
@@ -198,8 +202,14 @@ def _loopback_only(request: pytest.FixtureRequest) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _no_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every request a test makes, in this process or in a child it starts, goes direct.
+def _local_only_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every request a test makes, in this process or in a child it starts, goes direct, and a
+    browser a test starts reaches nothing but this machine.
+
+    The guard above covers this Python process only. Chrome is another process, and it opens
+    connections of its own (Google's push service, update and sync endpoints), so
+    `MIHENK_BROWSER_LOOPBACK_ONLY=1` (also set at session start, for the browsers the session
+    fixtures launch) makes `launch_browser` confine it.
 
     httpx2 reads proxy settings from the environment and, on Windows, from the registry, so a
     proxy on the machine would route the tests' 127.0.0.1 traffic through it. The proxy variables
@@ -213,6 +223,7 @@ def _no_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name.lower(), raising=False)
     monkeypatch.setenv("NO_PROXY", "*")
     monkeypatch.setenv("no_proxy", "*")
+    monkeypatch.setenv(LOOPBACK_ONLY_VARIABLE, "1")
 
 
 @pytest.fixture

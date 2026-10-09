@@ -1,9 +1,12 @@
+import io
 import logging
+import os
 import re
 import socket
 import subprocess
 import sys
 import threading
+import tomllib
 import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -679,3 +682,140 @@ def test_a_command_line_command_loads_the_command_line_when_it_is_asked_for() ->
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "0 True"
     assert "usage: mihenk capture" in result.stdout
+
+
+# --- the token filter is on the pywebview logger too ---------------------------------------------
+
+
+@pytest.fixture
+def pywebview_logger() -> Iterator[logging.Logger]:
+    logger = logging.getLogger("pywebview")
+    before = list(logger.filters)
+    yield logger
+    logger.filters[:] = before
+
+
+def test_the_pywebview_logger_is_protected_once(pywebview_logger: logging.Logger) -> None:
+    launcher.redact_tokens_in_pywebview_log()
+    launcher.redact_tokens_in_pywebview_log()
+    ours = [f for f in pywebview_logger.filters if isinstance(f, launcher.TokenRedactingFilter)]
+    assert len(ours) == 1
+
+
+def test_a_handler_on_the_pywebview_logger_gets_the_message_and_traceback_without_the_token(
+    pywebview_logger: logging.Logger,
+) -> None:
+    # pywebview's own console handler sits on this logger, not on the root: only a filter on the
+    # logger itself reaches what it writes.
+    launcher.redact_tokens_in_pywebview_log()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    pywebview_logger.addHandler(handler)
+    previous = pywebview_logger.propagate
+    pywebview_logger.propagate = False
+    try:
+        pywebview_logger.error("Loading %s", URL)
+        try:
+            raise RuntimeError(f"cannot open {URL}")
+        except RuntimeError:
+            pywebview_logger.exception("window failed")
+    finally:
+        pywebview_logger.removeHandler(handler)
+        pywebview_logger.propagate = previous
+    text = stream.getvalue()
+    assert text.count("token=<redacted>") == 2
+    assert "window failed" in text
+    assert TOKEN not in text
+
+
+def test_main_protects_the_pywebview_log_from_the_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    servers: _Servers,
+    pywebview_logger: logging.Logger,
+) -> None:
+    monkeypatch.setattr(launcher, "run_window", lambda url: None)
+    launcher.main(["--data-dir", str(tmp_path / "data")])
+    assert any(isinstance(f, launcher.TokenRedactingFilter) for f in pywebview_logger.filters)
+
+
+# --- Ctrl+C leaves at once ----------------------------------------------------------------------
+
+
+class _Left(Exception):
+    """Raised by the stand-in for os._exit, which never returns."""
+
+
+class _Stream:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self._name = name
+        self._events = events
+
+    def flush(self) -> None:
+        self._events.append(f"{self._name} flushed")
+
+
+def test_entry_flushes_and_leaves_at_once_after_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    def fake_exit(code: int) -> None:
+        events.append(f"exit {code}")
+        raise _Left
+
+    monkeypatch.setattr(launcher, "main", lambda: 130)
+    monkeypatch.setattr(sys, "stdout", _Stream("stdout", events))
+    monkeypatch.setattr(sys, "stderr", _Stream("stderr", events))
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    with pytest.raises(_Left):
+        launcher.entry()
+    assert events == ["stdout flushed", "stderr flushed", "exit 130"]
+
+
+def test_entry_leaves_at_once_even_without_a_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    def fake_exit(code: int) -> None:
+        events.append(f"exit {code}")
+        raise _Left
+
+    monkeypatch.setattr(launcher, "main", lambda: 130)
+    monkeypatch.setattr(sys, "stdout", None)  # a windowed build
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(os, "_exit", fake_exit)
+    with pytest.raises(_Left):
+        launcher.entry()
+    assert events == ["exit 130"]
+
+
+@pytest.mark.parametrize("code", [0, 1, 2])
+def test_entry_leaves_the_normal_way_for_any_other_code(
+    monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    monkeypatch.setattr(launcher, "main", lambda: code)
+    monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("left without the shutdown"))
+    with pytest.raises(SystemExit) as raised:
+        launcher.entry()
+    assert raised.value.code == code
+
+
+def test_cli_main_still_returns_130_and_does_not_leave_the_process(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # The in-process tests of Ctrl+C rely on this: only the entry point calls os._exit.
+    def interrupt(*args: object, **kwargs: object) -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "install_chromium", interrupt)
+    monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("cli.main left the process"))
+    assert launcher.main(["install-browser", "--yes", "--data-dir", str(tmp_path)]) == 130
+    assert capsys.readouterr().err == "Stopped.\n"
+
+
+def test_both_entry_points_go_through_entry() -> None:
+    root = Path(__file__).resolve().parent.parent.parent
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["project"]["scripts"]["mihenk"] == "mihenk.app.launcher:entry"
+    main_module = (root / "src" / "mihenk" / "__main__.py").read_text(encoding="utf-8")
+    assert "entry()" in main_module
+    assert "SystemExit(main())" not in main_module

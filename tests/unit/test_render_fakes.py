@@ -48,6 +48,7 @@ class _Page:
         read_error: Exception | None = None,
         close_error: Exception | None = None,
         popups: int = 0,
+        popup_close_error: Exception | None = None,
     ) -> None:
         self.html = html
         self._text = text
@@ -56,6 +57,7 @@ class _Page:
         self.read_error = read_error
         self._close_error = close_error
         self._popups = popups
+        self._popup_close_error = popup_close_error
         self.context: _Context | None = None
         self.closed = False
         self.close_calls = 0
@@ -72,7 +74,7 @@ class _Page:
             raise self._goto_error
         if self.context is not None:
             for _ in range(self._popups):  # a window.open() or a target=_blank link
-                self.context.open_popup()
+                self.context.open_popup(self._popup_close_error)
         return _Response()
 
     def wait_for_function(self, expression: str, *, timeout: float) -> None:
@@ -134,8 +136,8 @@ class _Context:
             self._opened.append(self._page)
         return self._page
 
-    def open_popup(self) -> None:
-        popup = _Page()
+    def open_popup(self, close_error: Exception | None = None) -> None:
+        popup = _Page(close_error=close_error)
         popup.context = self
         self.popups.append(popup)
         self._opened.append(popup)
@@ -355,3 +357,40 @@ def test_the_context_is_closed_when_new_page_raises() -> None:
     with pytest.raises(PlaywrightError, match="Target closed"):
         _render(browser)
     assert browser.context.close_calls == 1
+
+
+# --- an extra page that will not close does not cost the run -------------------------------------
+
+
+def test_an_error_closing_a_popup_does_not_cost_the_state() -> None:
+    page = _Page(popups=2, popup_close_error=PlaywrightError("Target closed"))
+    browser = _Browser(page)
+    results = _render(browser)
+    assert isinstance(results[0], RenderedState)  # captured, not browser_unavailable
+    assert page.closed  # the state's own page was still closed
+    assert browser.context.close_calls == 1
+    assert [popup.close_calls for popup in browser.context.popups] == [1, 1]  # each was tried
+
+
+def test_an_error_closing_a_popup_does_not_stop_the_next_state() -> None:
+    page = _Page(popups=1, popup_close_error=PlaywrightError("Target closed"))
+    recipe = Recipe(
+        method=Method.RENDER_INTERACT, states=[State(label="first"), State(label="second")]
+    )
+    results = _render(_Browser(page), recipe)
+    assert [type(result) for result in results] == [RenderedState, RenderedState]
+
+
+def test_an_error_closing_the_states_own_page_still_propagates_with_popups_open() -> None:
+    page = _Page(popups=1, close_error=PlaywrightError("page close failed"))
+    browser = _Browser(page)
+    with pytest.raises(PlaywrightError, match="page close failed"):
+        _render(browser)
+    assert browser.context.popups[0].closed  # the popup was closed first
+    assert browser.context.close_calls == 1
+
+
+def test_an_error_that_is_not_a_playwright_error_closing_a_popup_propagates() -> None:
+    page = _Page(popups=1, popup_close_error=RuntimeError("something else broke"))
+    with pytest.raises(RuntimeError, match="something else broke"):
+        _render(_Browser(page))

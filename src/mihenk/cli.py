@@ -4,6 +4,10 @@ It runs the same capture code as a run will, without the window, the server or a
 one line per state: label, status, detail and the snapshot folder, separated by tabs. The exit
 code is 0 when every state was captured, 1 when any was not or the capture itself failed, and 2
 when the command line or the http client set-up is wrong.
+
+`mihenk install-browser` downloads Playwright's own Chromium into the data folder, after asking
+(design §17). `mihenk _playwright-install` is not for people: it is how that download reaches
+Playwright's own command line, from source and from the frozen app alike.
 """
 
 from __future__ import annotations
@@ -20,12 +24,19 @@ from typing import TextIO
 from urllib.parse import urlsplit
 
 import httpx2 as http
+from playwright.__main__ import main as playwright_main
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 from pydantic import ValidationError
 
 from mihenk.app.paths import default_data_dir
-from mihenk.capture.browser import BrowserUnavailable, launch_browser
+from mihenk.capture.browser import (
+    BrowserUnavailable,
+    browsers_dir,
+    install_chromium,
+    launch_browser,
+    start_playwright_env,
+)
 from mihenk.capture.fetch import fetch_robots, make_client
 from mihenk.capture.models import SAFE_SEGMENT, CaptureStatus, Method
 from mihenk.capture.pace import Pace, host_key, idna_host
@@ -137,6 +148,16 @@ def _parser() -> argparse.ArgumentParser:
         help="the country the capture is made from (default: this computer's region)",
     )
     capture.add_argument("--data-dir", type=Path, help="use this data folder")
+    install = commands.add_parser(
+        "install-browser",
+        help="download Playwright's Chromium, for a computer without Chrome or Edge",
+        description="Download Playwright's own Chromium (about 200 MB) into the data folder. "
+        "It is only needed if Chrome and Edge are not installed.",
+    )
+    install.add_argument(
+        "--yes", action="store_true", help="download without asking first (for scripts)"
+    )
+    install.add_argument("--data-dir", type=Path, help="use this data folder")
     return parser
 
 
@@ -186,15 +207,17 @@ def _result_line(result: CaptureResult) -> str:
     return "\t".join((result.state_label, result.status.value, _one_line(result.detail), folder))
 
 
-def _capture_in_browser(spec: PageSpec, ctx: RunContext) -> list[CaptureResult]:
+def _capture_in_browser(spec: PageSpec, ctx: RunContext, data_dir: Path) -> list[CaptureResult]:
     """Starts Playwright for a render method, captures, and always closes the browser.
 
-    Until Task 1.10 only an installed Chrome or Edge is used. No browser at all is a result
-    (`browser_unavailable` per state), not an error.
+    An installed Chrome or Edge is used first, then a Chromium downloaded into the data folder
+    (`mihenk install-browser`). No browser at all is a result (`browser_unavailable` per state),
+    not an error.
     """
+    start_playwright_env(data_dir)  # before the session starts: its driver reads this once
     with sync_playwright() as pw:
         try:
-            launched = launch_browser(pw)
+            launched = launch_browser(pw, allow_downloaded=True)
         except BrowserUnavailable:
             return capture_page(spec, ctx)
         try:
@@ -252,7 +275,7 @@ def _capture(args: argparse.Namespace) -> int:
             if recipe.method is Method.FETCH:
                 results = capture_page(spec, ctx)
             else:
-                results = _capture_in_browser(spec, ctx)
+                results = _capture_in_browser(spec, ctx, data_dir)
         except Exception as exc:
             # A snapshot path that is too long (ValueError), a disk that is full (OSError)...
             message = _one_line(str(exc)) or type(exc).__name__
@@ -265,14 +288,86 @@ def _capture(args: argparse.Namespace) -> int:
     return 0 if all(result.status is CaptureStatus.OK for result in results) else 1
 
 
+def _exit_code(code: object) -> int:
+    """The int a `SystemExit` stands for: no code is 0, a message or anything else is 1."""
+    if code is None:
+        return 0
+    return code if isinstance(code, int) else 1
+
+
+def _printable(text: str) -> str:
+    """The text with each character the console cannot show replaced by a question mark.
+
+    For `input()`'s prompt, which writes it to the console as it is. The data folder is in the
+    prompt, and a Windows user folder can hold letters a redirected code page cannot encode.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    return text.encode(encoding, "replace").decode(encoding)
+
+
+def _asked_yes(question: str) -> bool:
+    """Asks on the console; only y or yes (any case) is a yes. No console to ask on is a no."""
+    try:
+        answer = input(_printable(question + " "))
+    except (EOFError, RuntimeError):  # RuntimeError: a windowed build has no sys.stdin
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _install_browser(args: argparse.Namespace) -> int:
+    data_dir: Path = args.data_dir or default_data_dir()
+    folder = browsers_dir(data_dir)
+    if not args.yes:
+        question = (
+            f"Download Playwright's Chromium (about 200 MB) into {folder}? "
+            "It is only needed if Chrome and Edge are not installed. [y/N]"
+        )
+        if not _asked_yes(question):
+            _emit(sys.stdout, "Nothing was downloaded.")
+            return 0
+    _emit(sys.stdout, f"Downloading Playwright's Chromium into {folder} ...")
+    try:
+        code = install_chromium(data_dir)
+    except OSError as exc:  # the program could not even start
+        _emit(
+            sys.stderr,
+            f"mihenk install-browser: failed: {_one_line(str(exc)) or type(exc).__name__}",
+        )
+        return 1
+    if code != 0:
+        _emit(sys.stderr, f"mihenk install-browser: failed: the download ended with code {code}")
+        return 1
+    _emit(sys.stdout, "Done. mihenk uses it when Chrome and Edge are not installed.")
+    return 0
+
+
+def _playwright_install(rest: Sequence[str]) -> int:
+    """Runs Playwright's own command line with `rest`; `install_command` is what calls this.
+
+    Playwright's `main()` reads `sys.argv[1:]` and always ends in `sys.exit(code)`.
+    """
+    saved = sys.argv
+    sys.argv = ["playwright", *rest]
+    try:
+        playwright_main()
+    except SystemExit as exc:
+        return _exit_code(exc.code)
+    finally:
+        sys.argv = saved
+    return 0
+
+
 def main(argv: Sequence[str]) -> int:
+    if argv and argv[0] == "_playwright-install":
+        # Not an argparse command: the rest of the line belongs to Playwright, whose options
+        # (--no-shell and the like) argparse would refuse, and it stays out of --help.
+        return _playwright_install(argv[1:])
     try:
         args = _parser().parse_args(argv)
     except SystemExit as exc:  # --help, and a command line argparse refuses (code 2)
-        code = exc.code
-        if code is None:
-            return 0
-        return code if isinstance(code, int) else 1
+        return _exit_code(exc.code)
     if args.command == "capture":
         return _capture(args)
+    if args.command == "install-browser":
+        return _install_browser(args)
     raise AssertionError(f"unhandled command {args.command!r}")  # pragma: no cover

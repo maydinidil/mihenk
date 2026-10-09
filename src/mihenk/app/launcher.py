@@ -204,8 +204,9 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 # The first argument that hands the whole command line to the command-line interface instead of
-# opening the window.
-_CLI_COMMANDS = frozenset({"capture", "install-browser"})
+# opening the window. `_playwright-install` is how a frozen app (no `-m mihenk`) reaches
+# Playwright's own command line for the Chromium download.
+_CLI_COMMANDS = frozenset({"capture", "install-browser", "_playwright-install"})
 
 
 def main(argv: Sequence[str] | None = None) -> int:

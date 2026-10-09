@@ -507,10 +507,10 @@ def test_browser_option_help_mentions_the_browser_history(
     assert "one-time key" in help_text
 
 
-# --- the command line: capture and install-browser go to cli.main --------------------------------
+# --- the command line: capture, install-browser and the hidden install entry go to cli.main -----
 
 
-@pytest.mark.parametrize("command", ["capture", "install-browser"])
+@pytest.mark.parametrize("command", ["capture", "install-browser", "_playwright-install"])
 def test_command_line_commands_are_handed_to_the_cli(
     command: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

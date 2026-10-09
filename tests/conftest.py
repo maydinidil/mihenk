@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -42,10 +43,24 @@ def _guarded_connect_ex(self: socket.socket, address: Any) -> int:
     return _real_connect_ex(self, address)
 
 
+if sys.platform == "win32":
+    # Windows' default asyncio loop connects through the IOCP proactor (ConnectEx), which never
+    # calls socket.connect, so it needs its own guard.
+    from asyncio.windows_events import IocpProactor
+
+    _real_proactor_connect = IocpProactor.connect
+
+    def _guarded_proactor_connect(self: IocpProactor, conn: socket.socket, address: Any) -> Any:
+        _check(conn, address)
+        return _real_proactor_connect(self, conn, address)
+
+
 @pytest.fixture(autouse=True)
 def _loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
+    if sys.platform == "win32":
+        monkeypatch.setattr(IocpProactor, "connect", _guarded_proactor_connect)
 
 
 @pytest.fixture

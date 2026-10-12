@@ -7,16 +7,20 @@ background thread and is told to exit when the window closes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
+import os
 import re
 import secrets
 import socket
+import sys
 import threading
 import time
 import webbrowser
 from collections.abc import Sequence
 from importlib import resources
 from pathlib import Path
+from typing import NoReturn
 
 import uvicorn
 from fastapi import FastAPI
@@ -65,12 +69,17 @@ _TOKEN_IN_TEXT = re.compile(r"token=[^&\s'\"#]+")
 
 
 class TokenRedactingFilter(logging.Filter):
-    """Replaces token=<value> with token=<redacted> in a log record's message.
+    """Replaces token=<value> with token=<redacted> in a log record's message and traceback.
 
     pywebview logs the address it loads (Window.load_url, at PYWEBVIEW_LOG=DEBUG), and that
-    address carries the one-time key. The key is in msg or in args depending on how the line
-    was logged, so this looks at the formatted message. A record that cannot be formatted is dropped: the handler
+    address carries the one-time key; an exception that mentions the address carries it into the
+    traceback too. The key is in msg or in args depending on how the line was logged, so this
+    looks at the formatted message. A record that cannot be formatted is dropped: the handler
     would fail on it anyway, and an unchecked message must not reach the file.
+
+    It belongs on the log file's handler (see `open_log_file`), which every logger's records
+    reach. The traceback text is made here, from `exc_info`, when the formatter has not yet
+    made it: the formatter would make it after this filter has run, out of reach.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -82,14 +91,28 @@ class TokenRedactingFilter(logging.Filter):
         if redacted != message:
             record.msg = redacted
             record.args = None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = _TOKEN_IN_TEXT.sub("token=<redacted>", record.exc_text)
         return True
+
+
+def open_log_file(path: Path) -> logging.Handler:
+    """The handler for mihenk.log: every record written to the file passes the token filter."""
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.addFilter(TokenRedactingFilter())
+    return handler
 
 
 _PYWEBVIEW_FILTER = TokenRedactingFilter()
 
 
 def redact_tokens_in_pywebview_log() -> None:
-    """Every pywebview module logs through the "pywebview" logger, so one filter covers them."""
+    """The filter on the "pywebview" logger too: pywebview adds a console handler of its own to
+    that logger, which writes to stderr when mihenk runs from a terminal and never passes
+    through the log file's handler. Every pywebview module logs through this one logger."""
     logging.getLogger("pywebview").addFilter(_PYWEBVIEW_FILTER)  # a second call adds nothing
 
 
@@ -201,7 +224,22 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# The first argument that hands the whole command line to the command-line interface instead of
+# opening the window. `_playwright-install` is how a frozen app (no `-m mihenk`) reaches
+# Playwright's own command line for the Chromium download.
+_CLI_COMMANDS = frozenset({"capture", "install-browser", "_playwright-install"})
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    # The console script and `python -m mihenk` call this with no argument: the command line is
+    # then sys.argv[1:].
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in _CLI_COMMANDS:
+        # Imported here and not at the top: the command line loads Playwright and httpx2
+        # (about 0.28 s), which opening the window does not need.
+        from mihenk import cli
+
+        return cli.main(arguments)
     args = _parse(argv)  # --help and a bad option exit here, as argparse does
     try:
         return _run(args)
@@ -211,13 +249,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
+# What `cli.main` returns after Ctrl+C (the shell's 128 + SIGINT).
+_STOPPED = 130
+
+
+def entry() -> NoReturn:
+    """The program's entry point, for the console script and `python -m mihenk`: runs `main` and
+    exits with its code.
+
+    After Ctrl+C in a command line command the process leaves at once, without the interpreter's
+    shutdown. The Playwright loop that the interrupt abandoned would otherwise print about thirty
+    lines of "Task was destroyed but it is pending" and transport tracebacks as it is torn down.
+    The output is flushed first, and the http clients were closed on the way out of `cli.main`.
+    """
+    code = main()
+    if code == _STOPPED:
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None:  # a windowed build has none
+                with contextlib.suppress(OSError, ValueError):
+                    stream.flush()
+        os._exit(code)
+    raise SystemExit(code)
+
+
 def _run(args: argparse.Namespace) -> int:
     data_dir: Path = args.data_dir or default_data_dir()
     logging.basicConfig(
-        filename=logs_dir(data_dir) / "mihenk.log",
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        encoding="utf-8",
+        level=logging.INFO, handlers=[open_log_file(logs_dir(data_dir) / "mihenk.log")]
     )
     redact_tokens_in_pywebview_log()
     sock = bind_loopback()

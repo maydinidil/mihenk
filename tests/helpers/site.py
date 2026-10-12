@@ -22,6 +22,10 @@ class LocalSite:
     def __init__(self) -> None:
         self.routes: dict[str, Route] = {}
         self.hits: list[str] = []
+        # time.monotonic() of each hit, in step with `hits`: for tests of pacing.
+        self.hit_times: list[float] = []
+        # The headers of each request (names in lower case), in step with `hits`.
+        self.hit_headers: list[dict[str, str]] = []
         self._server: ThreadingHTTPServer | None = None
 
     def add(
@@ -67,6 +71,8 @@ class LocalSite:
             def _serve(self, *, head: bool) -> None:
                 path = self.path.split("?", 1)[0]
                 site.hits.append(path)
+                site.hit_times.append(time.monotonic())
+                site.hit_headers.append({k.lower(): v for k, v in self.headers.items()})
                 route = site.routes.get(path)
                 if route is None:
                     self.send_response(404)
@@ -75,14 +81,21 @@ class LocalSite:
                     return
                 if route.delay_s:
                     time.sleep(route.delay_s)
-                self.send_response(route.status)
-                self.send_header("Content-Type", route.content_type)
-                self.send_header("Content-Length", str(len(route.body)))
-                for name, value in route.headers.items():
-                    self.send_header(name, value)
-                self.end_headers()
-                if not head:
-                    self.wfile.write(route.body)
+                try:
+                    self.send_response(route.status)
+                    self.send_header("Content-Type", route.content_type)
+                    self.send_header("Content-Length", str(len(route.body)))
+                    for name, value in route.headers.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    if not head:
+                        self.wfile.write(route.body)
+                except ConnectionError:
+                    # The client gave up while the route was delaying (a page that polls for
+                    # ever, closed by the browser): BrokenPipeError, ConnectionAbortedError or
+                    # ConnectionResetError. Nobody is left to answer, and a traceback on stderr
+                    # would only hide real failures.
+                    self.close_connection = True
 
             def log_message(self, format: str, *args: object) -> None:
                 return

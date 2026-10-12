@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["£12 per user / month", "incl. VAT"],
+  "render_text_contains": ["£12 per user / month", "incl. VAT"],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["£"],
+    "vat_phrases": [{"language": "en", "kind": "incl", "phrase": "incl. VAT"}]
+  }
+}

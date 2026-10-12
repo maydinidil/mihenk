@@ -1,3 +1,3 @@
-from mihenk.app.launcher import main
+from mihenk.app.launcher import entry
 
-raise SystemExit(main())
+entry()

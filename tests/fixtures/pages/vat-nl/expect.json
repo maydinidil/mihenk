@@ -1,0 +1,12 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["€25 per gebruiker per maand", "excl. btw"],
+  "render_text_contains": ["€25 per gebruiker per maand", "excl. btw"],
+  "locale": {
+    "html_lang": "nl",
+    "currency_symbols": ["€"],
+    "currency_codes": ["EUR"],
+    "vat_phrases": [{"language": "nl", "kind": "excl", "phrase": "excl. btw"}]
+  }
+}

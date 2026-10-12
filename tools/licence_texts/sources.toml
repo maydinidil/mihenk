@@ -1,0 +1,15 @@
+# Licence texts for parts that ship with mihenk but carry no licence file of their own. Each was
+# downloaded once, by hand, from the place named in `source`; tools/gen_notices.py reproduces them
+# and fetches nothing. A table is keyed by the label gen_notices prints for the part, and applies
+# to one `version` of the distribution that ships it: when that version changes, the part counts
+# as missing again until its text is read once more and this entry is updated.
+
+["python proxy-tools"]
+version = "0.1.0"
+files = ["proxy-tools-0.1.0-LICENSE.txt"]
+source = "LICENSE.txt in https://github.com/jtushman/proxy_tools (master branch), read 2026-10-12. The package metadata says MIT; the project's own licence file is a BSD licence, reproduced as it is"
+
+["webview/lib"]
+version = "6.2.1"
+files = ["webview2-sdk-1.0.3856.49-LICENSE.txt", "webview2-sdk-1.0.3856.49-NOTICE.txt"]
+source = "LICENSE.txt and NOTICE.txt in the Microsoft.Web.WebView2 1.0.3856.49 NuGet package (https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3856.49), read 2026-10-12. pywebview 6.2.1 bundles that SDK version in webview/lib/"

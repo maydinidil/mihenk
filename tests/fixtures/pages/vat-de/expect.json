@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["29 € pro Nutzer und Monat", "inkl. 19 % MwSt."],
+  "render_text_contains": ["29 € pro Nutzer und Monat", "inkl. 19 % MwSt."],
+  "locale": {
+    "html_lang": "de",
+    "currency_symbols": ["€"],
+    "vat_phrases": [{"language": "de", "kind": "incl", "phrase": "inkl. 19 % MwSt"}]
+  }
+}

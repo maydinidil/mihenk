@@ -1,0 +1,10 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Starter", "€9 / month", "€19 / month", "€49 / month"],
+  "render_text_contains": ["Starter", "€9 / month", "€19 / month", "€49 / month"],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"]
+  }
+}

@@ -4,6 +4,7 @@ from importlib import metadata
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 from tools import check_licenses, gen_notices
 from tools.gen_notices import (
@@ -218,6 +219,12 @@ class Env:
         self.root = root
 
 
+def _runtime_packages(monkeypatch: pytest.MonkeyPatch, *requirements: str) -> None:
+    """The runtime closure `uv export` would list, with its environment markers."""
+    parsed = [Requirement(requirement) for requirement in requirements]
+    monkeypatch.setattr(check_licenses, "python_runtime_requirements", lambda: parsed)
+
+
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     """Every input of build_notices faked, with a licence file for every part (no gaps)."""
@@ -240,7 +247,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     monkeypatch.setattr(gen_notices, "ROOT", root)
     monkeypatch.setattr(gen_notices, "OUTPUT", root / "THIRD_PARTY_NOTICES.txt")
     monkeypatch.setattr(check_licenses, "load_overrides", dict)
-    monkeypatch.setattr(check_licenses, "python_runtime_names", lambda: ["fakepkg"])
+    _runtime_packages(monkeypatch, "fakepkg==1.2.3")
     monkeypatch.setattr(check_licenses, "npm_runtime_packages", lambda: ["fakenpm"])
     monkeypatch.setattr(
         gen_notices,
@@ -278,7 +285,7 @@ def test_build_notices_lists_the_parts_without_a_licence_file(
 ) -> None:
     shutil.rmtree(env.site / "webview")
     _dist(env.site, "barepkg", "0.1")
-    monkeypatch.setattr(check_licenses, "python_runtime_names", lambda: ["fakepkg", "barepkg"])
+    _runtime_packages(monkeypatch, "fakepkg==1.2.3", "barepkg==0.1")
     text, missing = gen_notices.build_notices()
     assert missing == ["python barepkg", "webview/lib"]
     assert text.count(gen_notices.NO_LICENCE_FILE) == 2
@@ -287,11 +294,82 @@ def test_build_notices_lists_the_parts_without_a_licence_file(
 def test_build_notices_skips_a_package_missing_on_this_platform(
     env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(check_licenses, "python_runtime_names", lambda: ["fakepkg", "zzghost"])
+    _runtime_packages(monkeypatch, "fakepkg==1.2.3", "zzghost==1.0 ; sys_platform == 'nowhere'")
     text, missing = gen_notices.build_notices()
     assert "zzghost" not in text
     assert missing == []
     assert "skip zzghost: not installed on this platform" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        pytest.param("zzghost==1.0", id="no marker"),
+        pytest.param("zzghost==1.0 ; python_version >= '3'", id="a marker that is true here"),
+    ],
+)
+def test_build_notices_refuses_a_missing_package_this_platform_needs(
+    env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], requirement: str
+) -> None:
+    # The licence check calls this a problem; a notices file without that package's licence text
+    # must not be written either.
+    _runtime_packages(monkeypatch, "fakepkg==1.2.3", requirement)
+    with pytest.raises(ValueError, match="python zzghost: not installed, but this platform needs"):
+        gen_notices.build_notices()
+    assert gen_notices.main([]) == 1
+    assert "ERROR python zzghost: not installed" in capsys.readouterr().err
+    assert not (env.root / "THIRD_PARTY_NOTICES.txt").exists()
+
+
+def test_build_notices_includes_an_installed_package_whatever_its_marker(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _runtime_packages(monkeypatch, "fakepkg==1.2.3 ; sys_platform == 'nowhere'")
+    text, _ = gen_notices.build_notices()
+    assert "fakepkg 1.2.3 (MIT)" in text
+
+
+def test_a_package_listed_twice_is_needed_if_any_listing_needs_it(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _runtime_packages(
+        monkeypatch, "zzghost==1.0 ; sys_platform == 'nowhere'", "zzghost==1.0 ; os_name != ''"
+    )
+    with pytest.raises(ValueError, match="zzghost"):
+        gen_notices.build_notices()
+
+
+@pytest.mark.parametrize(
+    ("requirement", "needed"),
+    [
+        ("zzghost==1.0", True),
+        ("zzghost==1.0 ; sys_platform == 'nowhere'", False),
+        ("zzghost==1.0 ; sys_platform != 'nowhere'", True),
+        ("zzghost==1.0 ; python_version >= '3'", True),
+        ("zzghost==1.0 ; python_version < '3'", False),
+    ],
+)
+def test_the_notices_and_the_licence_check_decide_a_missing_package_the_same_way(
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    requirement: str,
+    needed: bool,
+) -> None:
+    _runtime_packages(monkeypatch, requirement)
+    assert check_licenses.needed_here(Requirement(requirement)) is needed
+    # The notices: a needed package that is missing is an error, any other is skipped.
+    problems: list[str] = []
+    check_licenses._check_python({}, problems)
+    out = capsys.readouterr().out
+    if needed:
+        assert problems and "not installed" in problems[0]
+        with pytest.raises(ValueError, match="not installed"):
+            gen_notices.build_notices()
+    else:
+        assert problems == []
+        assert "skip zzghost" in out
+        gen_notices.build_notices()
 
 
 def test_main_writes_the_file_and_exits_zero_even_with_a_gap(
@@ -328,3 +406,32 @@ def test_main_reports_a_licence_file_that_is_not_utf8_and_writes_nothing(
     assert "ERROR" in err
     assert str(Path("playwright") / "driver" / "LICENSE") in err
     assert not (env.root / "THIRD_PARTY_NOTICES.txt").exists()
+
+
+def _keep_texts(env: Env, label: str, version: str) -> None:
+    folder = env.root / "tools" / "licence_texts"
+    folder.mkdir(parents=True)
+    (folder / "kept-LICENSE.txt").write_text("Kept licence text", encoding="utf-8")
+    (folder / "sources.toml").write_text(
+        f'["{label}"]\nversion = "{version}"\nfiles = ["kept-LICENSE.txt"]\n'
+        'source = "https://example.invalid/LICENSE, read by hand"\n',
+        encoding="utf-8",
+    )
+
+
+def test_a_kept_licence_text_fills_the_gap_for_its_version(env: Env) -> None:
+    shutil.rmtree(env.site / "webview")
+    _keep_texts(env, "webview/lib", "9.8")
+    text, missing = gen_notices.build_notices()
+    assert missing == []
+    assert gen_notices.NO_LICENCE_FILE not in text
+    assert "Kept licence text" in text
+    assert "kept-LICENSE.txt (kept in tools/licence_texts/; source: https://example.invalid" in text
+
+
+def test_a_kept_licence_text_for_another_version_leaves_the_gap(env: Env) -> None:
+    shutil.rmtree(env.site / "webview")
+    _keep_texts(env, "webview/lib", "9.7")
+    text, missing = gen_notices.build_notices()
+    assert missing == ["webview/lib"]
+    assert "Kept licence text" not in text

@@ -1,0 +1,11 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Starter plan", "€9 / month"],
+  "render_text_contains": ["Starter plan", "€9 / month"],
+  "structured": [{"kind": "json_script", "problem": "too_large"}],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"]
+  }
+}

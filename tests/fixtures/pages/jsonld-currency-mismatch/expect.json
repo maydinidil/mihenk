@@ -1,0 +1,12 @@
+{
+  "methods": ["fetch", "render"],
+  "status": "ok",
+  "fetch_text_contains": ["Plus", "€29 / month"],
+  "render_text_contains": ["Plus", "€29 / month"],
+  "structured": [{"kind": "jsonld", "problem": null}],
+  "locale": {
+    "html_lang": "en",
+    "currency_symbols": ["€"],
+    "currency_codes": []
+  }
+}

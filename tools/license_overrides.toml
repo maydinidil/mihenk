@@ -11,3 +11,33 @@
 spdx = "MIT"
 version = "0.3.1"
 source = "https://github.com/pythonnet/clr-loader (project URL in the package metadata); read clr_loader-0.3.1.dist-info/licenses/LICENSE in the installed distribution"
+
+[pyobjc-core]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-cocoa]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-quartz]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-security]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-uniformtypeidentifiers]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-webkit]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"

@@ -185,8 +185,11 @@ def test_a_robots_txt_redirect_loop_is_paced_on_every_hop(
     assert "/static-table" not in site.hits
     assert len(site.hits) == 6  # robots.txt and five redirects
     gaps = [later - earlier for earlier, later in pairwise(site.hit_times)]
-    # 0.15, not 0.18: a gap seen by the server can fall a few ms short of 0.2 s; no pacing is ~0.
-    assert all(gap >= 0.15 for gap in gaps), gaps
+    # A gap seen by the server can be shorter than 0.2 s when the request before it left late
+    # (0.127 s on a macOS runner), but the hops together cannot be faster than the pacing allows.
+    # Without pacing every gap is a few milliseconds.
+    assert all(gap >= 0.1 for gap in gaps), gaps
+    assert sum(gaps) >= 0.8, gaps
 
 
 def _run_module(*args: str) -> subprocess.CompletedProcess[str]:

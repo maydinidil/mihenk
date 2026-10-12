@@ -610,8 +610,9 @@ def test_the_published_folder_inherits_its_permissions_like_any_other_folder(
     ordinary = tmp_path / "ordinary"
     ordinary.mkdir()
     ref = write_snapshot(tmp_path, snap())
-    inherited_here = "(I)" in icacls(ordinary)
-    assert inherited_here, "the test folder itself does not inherit: nothing to compare"
+    if "(I)" not in icacls(ordinary):
+        # A CI runner's temporary folder can carry its own, non-inherited permissions.
+        pytest.skip("folders here do not inherit permissions, so there is nothing to compare")
     assert "(I)" in icacls(ref.path)  # a mkdtemp folder has a protected ACL: no (I) entries
 
 

@@ -27,5 +27,6 @@ All notable changes to mihenk are recorded here. The format follows
 - Rendering in the installed Chrome or Edge, including clicking a billing toggle.
 - `mihenk capture` and `mihenk install-browser` (Chromium is downloaded only after a yes).
 - Decision record 0006 and the stage 1 record.
+- Decision record 0008: the first live capture.
 - The browser's own services (push messaging, sign-in and clock checks, component updates, and
   Edge's account and configuration calls) are switched off while mihenk drives it (decision 0007).

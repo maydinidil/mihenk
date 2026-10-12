@@ -18,7 +18,7 @@ and fixed together at the end of the stage.
 | Every trap page captured by the methods its `expect.json` names | Passes (`test_every_trap_page_by_its_methods`) |
 | Final review (seams between tasks) | Two Important findings and seven smaller ones, all fixed in one round (below). The other nine seams held |
 | CI on Windows and macOS | Not run yet; waits for the first push |
-| A live capture of a real pricing page | Waits for Aydin |
+| A live capture of a real pricing page | Done 2026-10-12 (decision 0008): fetch and render work; prices drawn inside a shadow root are missing from the rendered text (fix before stage 2's extraction) |
 | GitHub repository | `maydinidil/mihenk` exists, public and empty; nothing pushed |
 
 ## Rulings made during the stage
@@ -54,6 +54,8 @@ and fixed together at the end of the stage.
 
 | Item | Where it goes |
 |---|---|
+| Prices drawn inside a shadow root (web components) and text faded to opacity 0: the rendered text misses the first and keeps the second (decision 0008, F1 and F2) | A capture fix before stage 2's extraction, with a trap page |
+| Cookie dialogs that block clicks, and labels that are not the control (decision 0008, F3 and F4) | The add-a-brand helper and the recipe editor |
 | A trap page whose prices are only in the Next.js data blob | Stage 2, with extraction |
 | The page language has to choose among VAT phrases ("+ IVA" is Spanish and Italian, "HT" reads as French, "BSO + KDV" as Turkish) | Stage 2 |
 | "TL" beside a number is not always Turkish lira; "Kr 99" and "199 Kr" are not marked | Stage 2 |
@@ -73,8 +75,6 @@ and fixed together at the end of the stage.
 
 | Item | Note |
 |---|---|
-| Chrome's own traffic during real captures: branded Chrome contacts Google for its own services while mihenk drives it, which the promise "no network call except tracked pages, the chosen provider and the update check" does not allow for | A decision before stage 3, where captures run inside the app |
-| A live capture of a real pricing page | `uv run mihenk capture <URL>`; for a page with a billing toggle also `--method render_interact --state ...`. The result goes into a decision record; no vendor page is committed |
 | Push `stage-1` (and stage 0's branches) | CI on Windows and macOS runs after the push |
 | Open the stage-1 pull request | After CI is green |
 | Stage 0's open items | The hand checks (the window opens and closing it ends the app; `--smoke` with the default data folder) and the private record commit. Settled on 2026-10-12: the two missing licence texts are kept in `tools/licence_texts/`, and decision 0005 is accepted (no Microsoft Store) |

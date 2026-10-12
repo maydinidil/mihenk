@@ -115,9 +115,11 @@ def test_non_licence_classifiers_are_ignored(site_packages: Path) -> None:
 
 def test_a_package_with_an_unmapped_licence_classifier_is_unknown(site_packages: Path) -> None:
     # MIT is listed first; the GPL classifier must still make the whole package unknown.
+    # Both are installed before the first lookup: importlib.metadata caches a folder's listing
+    # by its modification time, which a fast machine may not change between two installs.
     _install(site_packages, "zzmixed", "1.0", MIT_CLASSIFIER, GPL_CLASSIFIER)
-    assert python_expression("zzmixed", {}) is None
     _install(site_packages, "zzmixedreverse", "1.0", GPL_CLASSIFIER, MIT_CLASSIFIER)
+    assert python_expression("zzmixed", {}) is None
     assert python_expression("zzmixedreverse", {}) is None
 
 

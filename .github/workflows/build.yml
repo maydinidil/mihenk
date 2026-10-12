@@ -98,9 +98,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          # The real ISCC.exe first: on the runner `iscc` on PATH is Chocolatey's shim, whose
+          # version reads "0.0.0.0 - Chocolatey Shim".
           $known = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-          if (-not $iscc -and (Test-Path $known)) { $iscc = $known }
+          $iscc = if (Test-Path $known) { $known } else { $null }
+          if (-not $iscc) {
+            $found = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+            if ($found -and $found -notlike "$env:ProgramData\Chocolatey\bin\*") { $iscc = $found }
+          }
           if (-not $iscc) {
             Write-Host 'iscc not found; installing Inno Setup with Chocolatey.'
             choco install innosetup -y --no-progress
@@ -112,7 +117,8 @@ jobs:
           Write-Host "iscc: $iscc"
           # ArchitecturesAllowed=x64compatible needs 6.3 or newer. The banner of `iscc /?` has no
           # minor version, so read the version from the executable itself.
-          $version = [version](Get-Item $iscc).VersionInfo.ProductVersion
+          $info = (Get-Item $iscc).VersionInfo
+          $version = [version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart)
           Write-Host "Inno Setup version: $version"
           if ($version -lt [version]'6.3') { throw "Inno Setup $version is too old; mihenk.iss needs 6.3 or newer." }
           "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

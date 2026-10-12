@@ -195,6 +195,74 @@ def test_a_chromium_that_is_not_downloaded_is_a_missing_browser_not_an_error() -
     assert chromium.tried == ["chrome", "msedge", "chromium"]
 
 
+# --- the browser's own services stay off (decision 0007) -----------------------------------------
+
+# Every launch passes these, confined or not. Decision 0007 says what each one stops.
+OWN_SWITCHES = (
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+    "--disable-domain-reliability",
+    "--no-pings",
+    "--allow-browser-signin=false",
+    "--gaia-url=http://127.0.0.1:9/",
+    "--component-updater=url-source=http://127.0.0.1:9/",
+)
+OWN_DISABLED_FEATURES = (
+    "NetworkTimeServiceQuerying",
+    "SafeBrowsingHashPrefixRealTimeLookups",
+    "AimEnabled",
+    "PreconnectToSearch",
+    "msImplicitSignin",
+    "msUXConfigService",
+    "msUXConfigServiceV3",
+    "msEdgeMouseGestureSupported",
+)
+# The services that have no switch: their own host names, which no web page loads.
+SERVICE_HOST_RULES = (
+    "MAP android.clients.google.com ~NOTFOUND , MAP mtalk.google.com ~NOTFOUND"
+    " , MAP edge.microsoft.com ~NOTFOUND"
+)
+LOOPBACK_ONLY_RULES = "MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"
+DEAD_PROXY = {"server": "http://127.0.0.1:9", "bypass": "127.0.0.1"}
+
+
+def _switch(args: list[str], name: str) -> str:
+    """The value of the one `name=...` switch in `args`; fails when there is none, or more."""
+    values = [arg.removeprefix(name + "=") for arg in args if arg.startswith(name + "=")]
+    assert len(values) == 1, values
+    return values[0]
+
+
+def test_a_normal_launch_turns_off_the_browsers_own_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(LOOPBACK_ONLY_VARIABLE, raising=False)
+    pw, chromium = _playwright(working={"chrome"})
+    launch_browser(pw, allow_downloaded=True)  # as the CLI launches it
+    (options,) = chromium.options
+    for switch in OWN_SWITCHES:
+        assert switch in options["args"]
+    assert _switch(options["args"], "--host-resolver-rules") == SERVICE_HOST_RULES
+    assert "proxy" not in options  # not confined: pages on any host still load
+
+
+def test_the_features_merge_into_playwrights_own_disable_features_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Chrome keeps only the last `--disable-features`, so a second one would undo Playwright's.
+    monkeypatch.delenv(LOOPBACK_ONLY_VARIABLE, raising=False)
+    pw, chromium = _playwright(working={"chrome"})
+    launch_browser(pw)
+    (options,) = chromium.options
+    (playwrights,) = options["ignore_default_args"]  # Playwright's own switch is left out...
+    assert playwrights.startswith("--disable-features=")
+    playwright_features = playwrights.removeprefix("--disable-features=").split(",")
+    assert "MediaRouter" in playwright_features
+    merged = _switch(options["args"], "--disable-features").split(",")  # ...and comes back merged
+    assert merged == [*playwright_features, *OWN_DISABLED_FEATURES]
+
+
 # --- a browser that reaches nothing but this machine ---------------------------------------------
 
 
@@ -205,11 +273,14 @@ def test_with_the_loopback_variable_every_launch_gets_the_host_rules_and_a_dead_
     pw, chromium = _playwright()  # nothing launches, so every channel is tried
     with pytest.raises(BrowserUnavailable):
         launch_browser(pw, allow_downloaded=True)
-    expected = {
-        "args": ["--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"],
-        "proxy": {"server": "http://127.0.0.1:9", "bypass": "127.0.0.1"},
-    }
-    assert chromium.options == [expected, expected, expected]
+    assert len(chromium.options) == 3
+    for options in chromium.options:
+        # One merged switch: the services' own rules, then the confinement in full.
+        rules = _switch(options["args"], "--host-resolver-rules")
+        assert rules == SERVICE_HOST_RULES + " , " + LOOPBACK_ONLY_RULES
+        assert options["proxy"] == DEAD_PROXY
+        for switch in OWN_SWITCHES:
+            assert switch in options["args"]
 
 
 def test_the_loopback_options_reach_the_launch_that_succeeds(
@@ -219,17 +290,19 @@ def test_the_loopback_options_reach_the_launch_that_succeeds(
     pw, chromium = _playwright(working={"chrome"})
     assert launch_browser(pw).channel == "chrome"
     (options,) = chromium.options
-    assert options["args"] == ["--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"]
-    assert options["proxy"] == {"server": "http://127.0.0.1:9", "bypass": "127.0.0.1"}
+    assert _switch(options["args"], "--host-resolver-rules").endswith(" , " + LOOPBACK_ONLY_RULES)
+    assert options["proxy"] == DEAD_PROXY
 
 
-def test_without_the_loopback_variable_the_launch_is_unchanged(
+def test_without_the_loopback_variable_the_browser_is_not_confined(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(LOOPBACK_ONLY_VARIABLE, raising=False)
     pw, chromium = _playwright(working={"chrome"})
     launch_browser(pw)
-    assert chromium.options == [{}]  # neither args nor proxy
+    (options,) = chromium.options
+    assert "proxy" not in options
+    assert "MAP *" not in _switch(options["args"], "--host-resolver-rules")
 
 
 @pytest.mark.parametrize("value", ["", "0", "true", "yes", "on", " 1"])
@@ -239,7 +312,9 @@ def test_only_the_value_1_turns_the_loopback_limit_on(
     monkeypatch.setenv(LOOPBACK_ONLY_VARIABLE, value)
     pw, chromium = _playwright(working={"chrome"})
     launch_browser(pw)
-    assert chromium.options == [{}]
+    (options,) = chromium.options
+    assert "proxy" not in options
+    assert "MAP *" not in _switch(options["args"], "--host-resolver-rules")
 
 
 def test_the_suite_sets_the_variable_for_its_own_browsers_and_children() -> None:

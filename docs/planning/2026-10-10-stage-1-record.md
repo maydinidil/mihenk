@@ -17,9 +17,9 @@ and fixed together at the end of the stage.
 | Tests | 1508 Python tests pass with the browser tests required; ruff, mypy, the price lint and the licence check are clean |
 | Every trap page captured by the methods its `expect.json` names | Passes (`test_every_trap_page_by_its_methods`) |
 | Final review (seams between tasks) | Two Important findings and seven smaller ones, all fixed in one round (below). The other nine seams held |
-| CI on Windows and macOS | Not run yet; waits for the first push |
+| CI on Windows and macOS | Green on 2026-10-12, CI and the builds (installer, disk image, release checks). Two timing tests were made robust to network jitter, and a permission test skips where folders do not inherit |
 | A live capture of a real pricing page | Done 2026-10-12 (decision 0008): fetch and render work; prices drawn inside a shadow root are missing from the rendered text (fix before stage 2's extraction) |
-| GitHub repository | `maydinidil/mihenk` exists, public and empty; nothing pushed |
+| GitHub repository | `maydinidil/mihenk`, public; `stage-1` pushed 2026-10-12 |
 
 ## Rulings made during the stage
 
@@ -54,6 +54,8 @@ and fixed together at the end of the stage.
 
 | Item | Where it goes |
 |---|---|
+| Once, the macOS release check (`--smoke`) of the stage 1 build hung until the step's 5 minute limit, past its own 60 second timeout; it passed on the next run (5 s) | Watch it; if it happens again, give the watcher a hard exit after the timeout |
+| Playwright's driver is now in the frozen app (its PyInstaller hook ran on both systems), but no capture has run from a frozen build | Stage 3, when captures run inside the app |
 | Prices drawn inside a shadow root (web components) and text faded to opacity 0: the rendered text misses the first and keeps the second (decision 0008, F1 and F2) | A capture fix before stage 2's extraction, with a trap page |
 | Cookie dialogs that block clicks, and labels that are not the control (decision 0008, F3 and F4) | The add-a-brand helper and the recipe editor |
 | A trap page whose prices are only in the Next.js data blob | Stage 2, with extraction |
@@ -75,7 +77,6 @@ and fixed together at the end of the stage.
 
 | Item | Note |
 |---|---|
-| Push `stage-1` (and stage 0's branches) | CI on Windows and macOS runs after the push |
 | Open the stage-1 pull request | After CI is green |
 | Stage 0's open items | The hand checks (the window opens and closing it ends the app; `--smoke` with the default data folder) and the private record commit. Settled on 2026-10-12: the two missing licence texts are kept in `tools/licence_texts/`, and decision 0005 is accepted (no Microsoft Store) |
 | Optional: `uv run mihenk install-browser` on a machine without Chrome or Edge | Confirms the download path |

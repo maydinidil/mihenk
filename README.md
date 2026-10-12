@@ -162,6 +162,7 @@ flowchart TD
 | [`docs/superpowers/plans/2026-10-08-mihenk-stages-0-1.md`](docs/superpowers/plans/2026-10-08-mihenk-stages-0-1.md) | The plan for stages 0 and 1, ending with the roadmap for stages 2 to 6 |
 | [`docs/planning/`](docs/planning/) | The record of each finished stage: rulings made and work carried forward |
 | [`docs/decisions/`](docs/decisions/) | Decisions taken during the build, one file each |
+| [`docs/reviews/codex-findings.md`](docs/reviews/codex-findings.md) | Findings from code reviews, each with a verdict and a status |
 | [`docs/demo/pricing.html`](docs/demo/pricing.html) | The made-up pricing page the screenshots were taken from |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed, release by release |
 

@@ -28,5 +28,16 @@ All notable changes to mihenk are recorded here. The format follows
 - `mihenk capture` and `mihenk install-browser` (Chromium is downloaded only after a yes).
 - Decision record 0006 and the stage 1 record.
 - Decision record 0008: the first live capture.
+
+### Known issues
+
+- The frozen app is not yet checked in CI to start Playwright; the driver is bundled, but only the
+  window is tested (Codex F1, `docs/reviews/codex-findings.md`).
+- A fetch can run past its deadline by up to three per-operation timeouts, more than decision 0006
+  states (Codex F2).
+- A page address with a user name and password is recorded with them in the snapshot's
+  `meta.json` (Codex F3).
+- Prices drawn inside a web component's shadow root are missing from the rendered text, and text
+  faded to invisible stays in it (decision 0008).
 - The browser's own services (push messaging, sign-in and clock checks, component updates, and
   Edge's account and configuration calls) are switched off while mihenk drives it (decision 0007).

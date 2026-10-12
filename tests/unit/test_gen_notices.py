@@ -406,3 +406,32 @@ def test_main_reports_a_licence_file_that_is_not_utf8_and_writes_nothing(
     assert "ERROR" in err
     assert str(Path("playwright") / "driver" / "LICENSE") in err
     assert not (env.root / "THIRD_PARTY_NOTICES.txt").exists()
+
+
+def _keep_texts(env: Env, label: str, version: str) -> None:
+    folder = env.root / "tools" / "licence_texts"
+    folder.mkdir(parents=True)
+    (folder / "kept-LICENSE.txt").write_text("Kept licence text", encoding="utf-8")
+    (folder / "sources.toml").write_text(
+        f'["{label}"]\nversion = "{version}"\nfiles = ["kept-LICENSE.txt"]\n'
+        'source = "https://example.invalid/LICENSE, read by hand"\n',
+        encoding="utf-8",
+    )
+
+
+def test_a_kept_licence_text_fills_the_gap_for_its_version(env: Env) -> None:
+    shutil.rmtree(env.site / "webview")
+    _keep_texts(env, "webview/lib", "9.8")
+    text, missing = gen_notices.build_notices()
+    assert missing == []
+    assert gen_notices.NO_LICENCE_FILE not in text
+    assert "Kept licence text" in text
+    assert "kept-LICENSE.txt (kept in tools/licence_texts/; source: https://example.invalid" in text
+
+
+def test_a_kept_licence_text_for_another_version_leaves_the_gap(env: Env) -> None:
+    shutil.rmtree(env.site / "webview")
+    _keep_texts(env, "webview/lib", "9.7")
+    text, missing = gen_notices.build_notices()
+    assert missing == ["webview/lib"]
+    assert "Kept licence text" not in text

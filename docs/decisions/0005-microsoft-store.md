@@ -1,6 +1,6 @@
 # 0005: Microsoft Store route
 
-Date: 2026-10-09. Status: Proposed: Aydin decides before 1.0.
+Date: 2026-10-09. Status: Accepted 2026-10-12: no Microsoft Store (D1). D2 to D4 apply only if the Store is reconsidered after 1.0.
 
 ## The question
 
@@ -37,6 +37,8 @@ One batch, recommendation marked on each.
 | D2 | If yes later, which route? | **MSIX**, with a hand-written manifest and `makeappx`. Not the EXE/MSI route |
 | D3 | Offer the Chromium download in a Store build? | **No.** Require Chrome or Edge and say so at the start of the listing description |
 | D4 | Account type and publisher name, when the time comes | **Individual**, publisher display name is Aydin's own name, not "mihenk" |
+
+Aydin's decision, 2026-10-12: no Microsoft Store. mihenk ships as the direct download.
 
 ## 1. Can a PyInstaller onedir app go to the Store?
 

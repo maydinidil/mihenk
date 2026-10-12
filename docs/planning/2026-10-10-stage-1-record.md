@@ -77,5 +77,5 @@ and fixed together at the end of the stage.
 | A live capture of a real pricing page | `uv run mihenk capture <URL>`; for a page with a billing toggle also `--method render_interact --state ...`. The result goes into a decision record; no vendor page is committed |
 | Push `stage-1` (and stage 0's branches) | CI on Windows and macOS runs after the push |
 | Open the stage-1 pull request | After CI is green |
-| Stage 0's open items | Licence texts for the WebView2 SDK and `proxy-tools`, decision 0005, the hand checks, the private record commit |
+| Stage 0's open items | The hand checks (the window opens and closing it ends the app; `--smoke` with the default data folder) and the private record commit. Settled on 2026-10-12: the two missing licence texts are kept in `tools/licence_texts/`, and decision 0005 is accepted (no Microsoft Store) |
 | Optional: `uv run mihenk install-browser` on a machine without Chrome or Edge | Confirms the download path |

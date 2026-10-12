@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mihenk"
+dynamic = ["version"]
+description = "Track competitors' pricing and packaging, with every number checked against its source."
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE", "NOTICE", "EVALUATION.md"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi>=0.143.0,<0.144",
+  "starlette>=1.7,<2",
+  "uvicorn>=0.54,<0.55",
+  "pywebview>=6.2.1,<6.3",
+  "platformdirs>=4.12,<5",
+  "playwright>=1.63,<1.64",
+  # pywebview does not pin pythonnet, and a brand-new release can break the loader. These two
+  # are the pair the Windows release check of the frozen build passed with (design §17).
+  "pythonnet==3.2.1; sys_platform == 'win32'",
+  "clr_loader==0.3.1; sys_platform == 'win32'",
+]
+
+[project.scripts]
+mihenk = "mihenk.app.launcher:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "mypy>=1.10",
+  "ruff>=0.5",
+  "httpx>=0.28",
+  "pyinstaller>=6.22.3",
+  "httpx2>=2.13.1",
+]
+
+[tool.hatch.version]
+path = "src/mihenk/__init__.py"
+
+[tool.hatch.build]
+artifacts = ["src/mihenk/web_dist/"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mihenk"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = [".", "src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "N", "SIM", "RUF", "PTH", "DTZ"]
+# N818: the plan's exception names (FetchFailure, BrowserUnavailable, ...) are shared
+# interfaces between tasks. E501: the formatter owns line length; long strings may stay.
+ignore = ["N818", "E501"]
+# Turkish dotless i, typographic apostrophe and minus sign appear in test pages on purpose.
+allowed-confusables = ["ı", "’", "−"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603", "S607", "N802"]
+"tools/**" = ["S603", "S607"]
+"hatch_build.py" = ["S603", "S607"]
+"src/mihenk/capture/browser.py" = ["S603"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+mypy_path = "src"
+packages = ["mihenk"]
+
+[[tool.mypy.overrides]]
+module = ["webview", "webview.*", "protego"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "browser: needs an installed Chrome or Edge",
+]

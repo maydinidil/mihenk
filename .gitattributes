@@ -1,0 +1,5 @@
+# LF everywhere, so test pages and hashes are byte-identical on Windows, macOS and CI.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary

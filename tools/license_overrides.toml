@@ -1,0 +1,43 @@
+# One table per package whose metadata does not state an SPDX licence.
+# [package-name]
+# spdx = "BSD-3-Clause"
+# version = "1.2.3"   # the installed version the licence was read for (see uv.lock)
+# source = "https://... (where the licence was read)"
+#
+# An entry applies to that version only. When the installed version differs, the package counts
+# as unknown again and the check fails until its licence is read once more and the entry is updated.
+
+[clr-loader]
+spdx = "MIT"
+version = "0.3.1"
+source = "https://github.com/pythonnet/clr-loader (project URL in the package metadata); read clr_loader-0.3.1.dist-info/licenses/LICENSE in the installed distribution"
+
+[pyobjc-core]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-cocoa]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-quartz]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-security]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-uniformtypeidentifiers]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"
+
+[pyobjc-framework-webkit]
+spdx = "MIT"
+version = "12.2.2"
+source = "https://github.com/ronaldoussoren/pyobjc (project URL in the package metadata); pyobjc-core/License.txt says it is the MIT licence; PyPI metadata for 12.2.2: License: MIT"

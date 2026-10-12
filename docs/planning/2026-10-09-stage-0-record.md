@@ -13,10 +13,10 @@ once, and smaller ones were collected and fixed together at the end of the stage
 |---|---|
 | Tasks 0.1 to 0.10 | Done on this machine |
 | Task 0.11 (the private record points here) | Done outside this repository |
-| GitHub repository | Not created yet; nothing pushed |
-| CI (`ci.yml`, `build.yml`) | Written and reviewed; never run. Waits for the first push |
+| GitHub repository | Created 2026-10-09; `main` and `stage-0` pushed 2026-10-12 |
+| CI (`ci.yml`, `build.yml`) | First run 2026-10-12. Green on Windows and macOS after three fixes: licence entries for the macOS-only pyobjc packages, reading the Inno Setup version on the runner, and a licence test that a folder cache made flaky |
 | Windows build | Frozen app built and release-checked here (35 MiB, 112 files, smoke exit 0) |
-| Windows installer, macOS build and disk image | Written; run in CI only |
+| Windows installer, macOS build and disk image | Built and release-checked in CI on 2026-10-12 |
 | Tests | 247 Python tests and 34 screens tests pass; ruff, mypy, ESLint and the TypeScript check are clean |
 | Final review (seams between tasks) | All eight seams hold; its smaller findings are listed below |
 
@@ -58,7 +58,6 @@ once, and smaller ones were collected and fixed together at the end of the stage
 
 | Item | Note |
 |---|---|
-| Create the GitHub repository `maydinidil/mihenk` | Then the remote is added and the first push needs Aydin's go |
 | Licence texts that the installed packages do not ship: the WebView2 SDK (bundled by pywebview) and `proxy-tools` | Needs a one-time download of the two licence files |
 | Decision 0005, Microsoft Store | Before 1.0 |
 | Hand checks: the window opens and closing it ends the app; `--smoke` with the default data folder | On Aydin's machine |

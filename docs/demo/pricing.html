@@ -1,0 +1,240 @@
+<!doctype html>
+<!-- A demo pricing page for the README's screenshots: Ledgerly is a made-up product, and every name and price here is invented. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledgerly pricing (demo)</title>
+<style>
+  :root {
+    --ink: #17212b;
+    --muted: #5b6875;
+    --line: #e2e6ea;
+    --page: #f6f7f9;
+    --card: #ffffff;
+    --accent: #0f766e;
+    --accent-soft: #e6f4f2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.45;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 20px 24px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .logo { font-weight: 700; font-size: 20px; letter-spacing: -0.01em; }
+  .logo span { color: var(--accent); }
+  .tag {
+    font-size: 12px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-weight: 500;
+  }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-size: 14px; }
+  .intro { text-align: center; padding: 24px 24px 8px; }
+  .intro h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: -0.02em; }
+  .intro p { margin: 0; color: var(--muted); }
+  #plans { max-width: 960px; margin: 0 auto; padding: 24px 24px 32px; }
+  .toggle {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+  .toggle .track {
+    display: inline-flex;
+    background: #e9ecef;
+    border-radius: 999px;
+    padding: 4px;
+  }
+  .toggle button {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 8px 20px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .toggle button[aria-pressed="true"] {
+    background: var(--card);
+    color: var(--ink);
+    box-shadow: 0 1px 3px rgba(23, 33, 43, 0.15);
+  }
+  .toggle .save {
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    margin-left: 6px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+  }
+  .plan {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    position: relative;
+  }
+  .plan.popular { border: 2px solid var(--accent); }
+  .badge {
+    position: absolute;
+    top: -12px;
+    left: 24px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+  .plan h2 { margin: 0; font-size: 18px; }
+  .plan .for { margin: 4px 0 16px; color: var(--muted); font-size: 14px; }
+  .price { display: flex; align-items: baseline; gap: 6px; }
+  .price .amount { font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
+  .price .per { color: var(--muted); font-size: 14px; }
+  .billing { margin: 4px 0 18px; color: var(--muted); font-size: 13px; min-height: 19px; }
+  .cta {
+    display: block;
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+    font-size: 15px;
+  }
+  .popular .cta { background: var(--accent); color: #fff; }
+  .plan ul { list-style: none; margin: 18px 0 0; padding: 0; font-size: 14px; }
+  .plan li { padding: 5px 0 5px 22px; position: relative; }
+  .plan li::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 11px;
+    width: 10px;
+    height: 6px;
+    border-left: 2px solid var(--accent);
+    border-bottom: 2px solid var(--accent);
+    transform: rotate(-45deg);
+  }
+  .note { text-align: center; color: var(--muted); font-size: 13px; margin: 20px 0 0; }
+  footer {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 16px 24px 32px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">Ledger<span>ly</span></span>
+    <span class="tag">demo page</span>
+  </div>
+  <nav>
+    <a href="#plans">Features</a>
+    <a href="#plans">Pricing</a>
+    <a href="#plans">Log in</a>
+  </nav>
+</header>
+
+<section class="intro">
+  <h1>Bookkeeping that keeps up with you</h1>
+  <p>Invoices, bank connections and VAT returns for small businesses.</p>
+</section>
+
+<section id="plans">
+  <div class="toggle">
+    <div class="track" role="group" aria-label="Billing period">
+      <button type="button" data-period="monthly" aria-pressed="false">Monthly</button>
+      <button type="button" data-period="yearly" aria-pressed="true">Yearly<span class="save">2 months free</span></button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <article class="plan">
+      <h2>Starter</h2>
+      <p class="for">For freelancers getting started</p>
+      <div class="price"><span class="amount" data-monthly="€12" data-yearly="€10">€10</span><span class="per">/ month</span></div>
+      <p class="billing" data-monthly="Billed monthly, excl. VAT" data-yearly="€120 billed yearly, excl. VAT">€120 billed yearly, excl. VAT</p>
+      <a class="cta" href="#plans">Start free trial</a>
+      <ul>
+        <li>1 user</li>
+        <li>50 invoices a month</li>
+        <li>1 bank connection</li>
+        <li>Email support</li>
+      </ul>
+    </article>
+
+    <article class="plan popular">
+      <span class="badge">Most popular</span>
+      <h2>Growth</h2>
+      <p class="for">For small teams with regular invoicing</p>
+      <div class="price"><span class="amount" data-monthly="€30" data-yearly="€25">€25</span><span class="per">/ month</span></div>
+      <p class="billing" data-monthly="Billed monthly, excl. VAT" data-yearly="€300 billed yearly, excl. VAT">€300 billed yearly, excl. VAT</p>
+      <a class="cta" href="#plans">Start free trial</a>
+      <ul>
+        <li>3 users</li>
+        <li>Unlimited invoices</li>
+        <li>3 bank connections</li>
+        <li>Quotes and payment reminders</li>
+      </ul>
+    </article>
+
+    <article class="plan">
+      <h2>Scale</h2>
+      <p class="for">For growing companies</p>
+      <div class="price"><span class="amount" data-monthly="€60" data-yearly="€50">€50</span><span class="per">/ month</span></div>
+      <p class="billing" data-monthly="Billed monthly, excl. VAT" data-yearly="€600 billed yearly, excl. VAT">€600 billed yearly, excl. VAT</p>
+      <a class="cta" href="#plans">Talk to us</a>
+      <ul>
+        <li>10 users</li>
+        <li>Unlimited invoices</li>
+        <li>Unlimited bank connections</li>
+        <li>Multi-currency and approvals</li>
+      </ul>
+    </article>
+  </div>
+
+  <p class="note">All prices in euros, excl. VAT. Cancel any time.</p>
+</section>
+
+<footer>Ledgerly is a made-up product. This page is a demo for mihenk's README.</footer>
+
+<script>
+  // Switches every price and billing line between the monthly and yearly values.
+  document.querySelectorAll(".toggle button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var period = button.dataset.period;
+      document.querySelectorAll(".toggle button").forEach(function (other) {
+        other.setAttribute("aria-pressed", String(other === button));
+      });
+      document.querySelectorAll("[data-monthly]").forEach(function (element) {
+        element.textContent = element.dataset[period];
+      });
+    });
+  });
+</script>
+</body>
+</html>

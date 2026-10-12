@@ -170,7 +170,10 @@ def test_every_request_to_one_site_is_paced_including_robots_txt_redirect_hops(
     assert cli.main(["capture", url, "--data-dir", str(tmp_path)]) == 0
     assert site.hits == ["/robots.txt", "/real-robots.txt", "/static-table"]
     gaps = [later - earlier for earlier, later in pairwise(site.hit_times)]
-    assert all(gap >= 0.45 for gap in gaps), gaps
+    # Each gap at least half the interval, and together the full pacing: a gap seen by the server
+    # can be short when the request before it left late (0.57 s then 0.43 s on a macOS runner).
+    assert all(gap >= 0.25 for gap in gaps), gaps
+    assert sum(gaps) >= 0.9, gaps
 
 
 def test_a_robots_txt_redirect_loop_is_paced_on_every_hop(
